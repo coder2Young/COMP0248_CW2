@@ -36,6 +36,9 @@ class Sun3DBaseDataset(Dataset):
         # Valid table labels
         self.valid_table_labels = ["table top", "dining table", "desk", "coffee table"]
         
+        # Sequences known to be all negative samples (no tables)
+        self.all_negative_sequences = ["mit_gym_z_squash", "harvard_tea_2"]
+        
         # Load all data pairs (RGB, depth, intrinsics, annotations)
         self.data_pairs = self._load_data_pairs()
     
@@ -66,12 +69,20 @@ class Sun3DBaseDataset(Dataset):
                 
                 # Check if the required directories exist
                 image_dir = os.path.join(subdir_path, 'image')
-                depth_dir = os.path.join(subdir_path, 'depthTSDF')
+                
+                # Check for different depth directory names
+                depth_dir = None
+                possible_depth_dirs = ['depthTSDF', 'depth']
+                for possible_dir in possible_depth_dirs:
+                    if os.path.exists(os.path.join(subdir_path, possible_dir)):
+                        depth_dir = os.path.join(subdir_path, possible_dir)
+                        break
+                
                 labels_dir = os.path.join(subdir_path, 'labels')
                 intrinsics_file = os.path.join(subdir_path, 'intrinsics.txt')
                 
                 # Skip if required directories don't exist
-                if not os.path.exists(image_dir) or not os.path.exists(depth_dir):
+                if not os.path.exists(image_dir) or depth_dir is None:
                     continue
                 
                 # Read intrinsics
@@ -82,7 +93,13 @@ class Sun3DBaseDataset(Dataset):
                 # Read annotations if available
                 annotations = {}
                 labels_file = os.path.join(labels_dir, 'tabletop_labels.dat')
-                if os.path.exists(labels_file):
+                
+                # Check if sequence is in all_negative_sequences list or if labels file exists
+                if sequence in self.all_negative_sequences:
+                    # For sequences known to be all negative, use empty annotations
+                    print(f"Sequence {sequence} is known to have all negative samples (no tables)")
+                    annotations = {}  # Empty annotations for all images
+                elif os.path.exists(labels_file):
                     try:
                         annotations = read_and_parse_polygon_labels(labels_file, self.valid_table_labels)
                     except Exception as e:
@@ -117,6 +134,7 @@ class Sun3DBaseDataset(Dataset):
                     rgb_filename = os.path.basename(rgb_file).split('.')[0]
                     
                     # Check if annotations exist for this image
+                    # For all_negative_sequences, this will always be an empty list
                     image_annotations = annotations.get(rgb_filename, [])
                     has_table = len(image_annotations) > 0
                     
@@ -364,9 +382,10 @@ class DatasetSplitter:
         Returns:
             tuple: (train_sequences, test_sequences)
         """
+        # Define train and test sequences as specified
         train_sequences = [
             'mit_32_d507',
-            'mit_76_459',
+            'mit_76_459', 
             'mit_76_studyroom',
             'mit_gym_z_squash',
             'mit_lab_hj'

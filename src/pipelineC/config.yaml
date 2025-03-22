@@ -27,7 +27,7 @@ training:
 
 # Loss settings
 loss:
-  class_weights: [1.0, 2.0]  # Weight more importance to table points due to class imbalance
+  class_weights: [1.0, 100.0]  # Weight more importance to table points due to class imbalance
   use_weighted_loss: true
 
 # Logging settings
