@@ -1,0 +1,45 @@
+# Configuration file for Pipeline A: Point Cloud Classification
+
+# Data settings
+data:
+  root: "data/CW2-Dataset/data"
+  num_points: 1024
+  use_height: true
+  num_workers: 4
+  batch_size: 32
+  train_val_split: 0.8  # 80% training, 20% validation
+
+# Model settings
+model:
+  name: "dgcnn"
+  emb_dims: 1024
+  dropout: 0.5
+  k: 20  # k-nearest neighbors for DGCNN
+
+# Training settings
+training:
+  epochs: 100
+  lr: 0.001
+  weight_decay: 1e-4
+  lr_decay: 0.7
+  lr_decay_step: 10
+  optimizer: "adam"  # "adam" or "sgd"
+  scheduler: "step"  # "step" or "cosine"
+  early_stopping: 10  # Number of epochs with no improvement after which training will be stopped
+
+# Logging settings
+logging:
+  log_dir: "results/pipelineA"
+  experiment_name: "dgcnn_classification"
+  use_tensorboard: true
+  log_interval: 10  # Log every 10 batches
+  save_checkpoint: true
+  checkpoint_dir: "weights/pipelineA"
+
+# Visualization settings
+visualization:
+  enabled: True
+  num_samples: 10
+  vis_frequency: 10  # Visualize every 5 epochs
+  rgb_visualization: True  # Enable RGB image visualization
+  point_cloud_visualization: False  # Enable point cloud visualization 
