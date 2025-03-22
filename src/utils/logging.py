@@ -10,7 +10,7 @@ class TrainingLogger:
     """
     Utility class for logging training progress and results.
     """
-    def __init__(self, log_dir, experiment_name, use_tensorboard=True, log_to_file=True, save_best_model=True):
+    def __init__(self, log_dir, experiment_name, use_tensorboard=True, log_to_file=True, save_best_model=True, tensorboard_dir=None):
         """
         Initialize the logger.
         
@@ -20,12 +20,14 @@ class TrainingLogger:
             use_tensorboard (bool): Whether to use TensorBoard
             log_to_file (bool): Whether to log to a file
             save_best_model (bool): Whether to save the best model based on validation metrics
+            tensorboard_dir (str, optional): Directory to save TensorBoard logs. If None, logs will be saved in log_dir.
         """
         self.log_dir = log_dir
         self.experiment_name = experiment_name
         self.use_tensorboard = use_tensorboard
         self.log_to_file = log_to_file
         self.save_best_model = save_best_model
+        self.tensorboard_dir = tensorboard_dir
         
         # Create log directory
         self.experiment_dir = os.path.join(log_dir, experiment_name)
@@ -33,7 +35,13 @@ class TrainingLogger:
         
         # Create TensorBoard writer
         if use_tensorboard:
-            self.writer = SummaryWriter(log_dir=self.experiment_dir)
+            if tensorboard_dir is not None:
+                # Use the common tensorboard directory directly without subdirectories
+                os.makedirs(tensorboard_dir, exist_ok=True)
+                self.writer = SummaryWriter(log_dir=tensorboard_dir, filename_suffix=f"_{experiment_name}")
+            else:
+                # Use the experiment directory
+                self.writer = SummaryWriter(log_dir=self.experiment_dir)
         
         # Set up logging
         if log_to_file:

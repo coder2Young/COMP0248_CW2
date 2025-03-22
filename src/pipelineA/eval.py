@@ -11,20 +11,53 @@ import argparse
 import yaml
 import json
 import matplotlib.pyplot as plt
+import logging
 from tqdm import tqdm
 from sklearn.metrics import confusion_matrix
+import cv2
+import glob
 
 from src.pipelineA.model import get_model
-from src.pipelineA.dataset import get_dataloaders, load_config
+from src.pipelineA.dataset import get_dataloaders
+from src.pipelineA.config import load_config, save_config
 from src.utils.metrics import compute_classification_metrics
-from src.utils.visualization import (
-    visualize_point_cloud, 
-    plot_confusion_matrix, 
-    visualize_classification_results,
-    plot_metrics_comparison
-)
+from src.utils.visualization import plot_confusion_matrix, visualize_classification_results, plot_metrics_comparison
 
-def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, num_vis_samples=10):
+# Set up logger
+logger = logging.getLogger('evaluation')
+logger.setLevel(logging.INFO)
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+logger.addHandler(console_handler)
+
+def load_rgb_image(sequence, subdir, data_root='data/CW2-Dataset/data'):
+    """
+    Load RGB image for visualization.
+    
+    Args:
+        sequence (str): Sequence name
+        subdir (str): Subdirectory name
+        data_root (str): Data root directory
+    
+    Returns:
+        numpy.ndarray: RGB image or None if not found
+    """
+    try:
+        # Try to reconstruct the path to the RGB image
+        rgb_dir = os.path.join(data_root, sequence, subdir, 'image')
+        if os.path.exists(rgb_dir):
+            # Just get any image from this directory for visualization
+            rgb_files = sorted([f for f in os.listdir(rgb_dir) if f.endswith('.jpg')])
+            if rgb_files:
+                rgb_path = os.path.join(rgb_dir, rgb_files[0])
+                rgb_image = cv2.imread(rgb_path)
+                rgb_image = cv2.cvtColor(rgb_image, cv2.COLOR_BGR2RGB)
+                return rgb_image
+    except Exception as e:
+        logger.error(f"Error loading RGB image: {e}")
+    return None
+
+def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, num_vis_samples=20):
     """
     Evaluate the model on the test set.
     
@@ -51,10 +84,13 @@ def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, 
     # Create directories for outputs
     os.makedirs(output_dir, exist_ok=True)
     if visualize:
-        os.makedirs(os.path.join(output_dir, 'visualizations'), exist_ok=True)
+        vis_dir = os.path.join(output_dir, 'visualizations')
+        os.makedirs(vis_dir, exist_ok=True)
     
     # Sample data for visualization
     vis_data = []
+    
+    logger.info("Starting evaluation...")
     
     with torch.no_grad():
         for batch_idx, data in enumerate(tqdm(dataloader, desc="Testing")):
@@ -96,8 +132,6 @@ def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, 
             # Store some samples for visualization
             if visualize and len(vis_data) < num_vis_samples:
                 for i in range(min(len(inputs), num_vis_samples - len(vis_data))):
-                    # Try to get the RGB image if available (it's in the dataset but might not be in the dataloader)
-                    # We'll need to retrieve it when visualizing
                     vis_data.append({
                         'point_cloud': inputs[i].cpu().numpy(),
                         'target': targets[i].cpu().item(),
@@ -118,14 +152,13 @@ def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, 
         np.array(all_preds)
     )
     
-    # Print label distribution
+    # Log label distribution
     target_counts = np.bincount(np.array(all_targets), minlength=2)
     pred_counts = np.bincount(np.array(all_preds), minlength=2)
     
-    print("\n===== Label Distribution Statistics =====")
-    print(f"Ground Truth: No Table (0): {target_counts[0]}, Table (1): {target_counts[1]}")
-    print(f"Predictions: No Table (0): {pred_counts[0]}, Table (1): {pred_counts[1]}")
-    print("========================================\n")
+    logger.info("===== Label Distribution Statistics =====")
+    logger.info(f"Ground Truth: No Table (0): {target_counts[0]}, Table (1): {target_counts[1]}")
+    logger.info(f"Predictions: No Table (0): {pred_counts[0]}, Table (1): {pred_counts[1]}")
     
     # Save detailed sample info to CSV
     sample_info_file = os.path.join(output_dir, 'sample_predictions.csv')
@@ -136,27 +169,26 @@ def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, 
                     f"{sample['subdir']},{sample['target']},{sample['prediction']},{sample['confidence']:.4f}\n")
     
     # Print first 20 predictions for manual verification
-    print("\n===== First 20 Sample Predictions =====")
-    print("Idx\tSequence\tSubdir\tGround Truth\tPrediction\tConfidence")
+    logger.info("===== First 20 Sample Predictions =====")
+    logger.info("Idx\tSequence\tSubdir\tGround Truth\tPrediction\tConfidence")
     for i, sample in enumerate(sample_info[:20]):
-        print(f"{i}\t{sample['sequence']}\t{sample['subdir']}\t{sample['target']}\t{sample['prediction']}\t{sample['confidence']:.4f}")
-    print("=======================================\n")
+        logger.info(f"{i}\t{sample['sequence']}\t{sample['subdir']}\t{sample['target']}\t{sample['prediction']}\t{sample['confidence']:.4f}")
     
     # Print metrics
-    print(f"Test Loss: {test_loss:.6f}")
-    print(f"Test Accuracy: {test_metrics['accuracy']:.4f}")
-    print(f"Test Precision: {test_metrics['precision']:.4f}")
-    print(f"Test Recall: {test_metrics['recall']:.4f}")
-    print(f"Test F1 Score: {test_metrics['f1_score']:.4f}")
-    print(f"Test Specificity: {test_metrics['specificity']:.4f}")
+    logger.info("===== Evaluation Metrics =====")
+    logger.info(f"Test Loss:       {test_loss:.6f}")
+    logger.info(f"Test Accuracy:   {test_metrics['accuracy']:.4f}")
+    logger.info(f"Test Precision:  {test_metrics['precision']:.4f}")
+    logger.info(f"Test Recall:     {test_metrics['recall']:.4f}")
+    logger.info(f"Test F1 Score:   {test_metrics['f1_score']:.4f}")
+    logger.info(f"Test Specificity: {test_metrics['specificity']:.4f}")
     
     # Print confusion matrix for better visualization
     cm = confusion_matrix(all_targets, all_preds)
-    print("\n===== Confusion Matrix =====")
-    print("GT\\Pred\tNo Table(0)\tTable(1)")
-    print(f"No Table(0)\t{cm[0][0]}\t\t{cm[0][1]}")
-    print(f"Table(1)\t{cm[1][0]}\t\t{cm[1][1]}")
-    print("===========================\n")
+    logger.info("===== Confusion Matrix =====")
+    logger.info("GT\\Pred\tNo Table(0)\tTable(1)")
+    logger.info(f"No Table(0)\t{cm[0][0]}\t\t{cm[0][1]}")
+    logger.info(f"Table(1)\t{cm[1][0]}\t\t{cm[1][1]}")
     
     # Convert NumPy types to native Python types for JSON serialization
     serializable_metrics = {}
@@ -205,44 +237,22 @@ def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, 
         save_path=metrics_plot_file
     )
     
-    # Visualize results
+    # Visualize results with RGB images
     if visualize:
-        # Function to load RGB image for visualization
-        def load_rgb_image(sequence, subdir, data_root='data/CW2-Dataset/data'):
-            # This is just a helper to try to find the RGB images for the test samples
-            # It's not guaranteed to work for all datasets, but it's a best effort
-            try:
-                import cv2
-                # Try to reconstruct the path to the RGB image
-                rgb_dir = os.path.join(data_root, sequence, subdir, 'image')
-                if os.path.exists(rgb_dir):
-                    # Just get any image from this directory for visualization
-                    rgb_files = sorted([f for f in os.listdir(rgb_dir) if f.endswith('.jpg')])
-                    if rgb_files:
-                        rgb_path = os.path.join(rgb_dir, rgb_files[0])
-                        rgb_image = cv2.imread(rgb_path)
-                        rgb_image = cv2.cvtColor(rgb_image, cv2.COLOR_BGR2RGB)
-                        return rgb_image
-            except Exception as e:
-                print(f"Error loading RGB image: {e}")
-            return None
-            
+        logger.info(f"Visualizing {len(vis_data)} samples with RGB images...")
+        
         for i, sample in enumerate(vis_data):
-            # First, visualize the point cloud
-            pc_vis_file = os.path.join(output_dir, 'visualizations', f'sample_{i}_pointcloud_gt_{sample["target"]}_pred_{sample["pred"]}.png')
-            
-            visualize_point_cloud(
-                point_cloud=sample['point_cloud'],
-                title=f'Ground Truth: {class_names[sample["target"]]}, '
-                      f'Predicted: {class_names[sample["pred"]]} '
-                      f'(Conf: {sample["confidence"]:.2f})',
-                save_path=pc_vis_file
+            # Get RGB image for visualization
+            rgb_image = load_rgb_image(
+                sequence=sample['sequence'], 
+                subdir=sample['subdir'], 
+                data_root=dataloader.dataset.dataset.data_root 
+                    if hasattr(dataloader.dataset, 'dataset') else 'data/CW2-Dataset/data'
             )
             
-            # Then, try to visualize the RGB image with prediction
-            rgb_image = load_rgb_image(sample['sequence'], sample['subdir'])
             if rgb_image is not None:
-                rgb_vis_file = os.path.join(output_dir, 'visualizations', f'sample_{i}_rgb_gt_{sample["target"]}_pred_{sample["pred"]}.png')
+                # Set up the visualization path
+                rgb_vis_file = os.path.join(vis_dir, f'sample_{i}_rgb_gt_{sample["target"]}_pred_{sample["pred"]}.png')
                 
                 # Visualize RGB image with classification results
                 visualize_classification_results(
@@ -254,6 +264,10 @@ def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, 
                     confidence=sample['confidence'],
                     save_path=rgb_vis_file
                 )
+                
+                logger.info(f"Saved RGB visualization to {rgb_vis_file}")
+            else:
+                logger.warning(f"Could not load RGB image for sample {i} from {sample['sequence']}/{sample['subdir']}")
     
     return test_loss, test_metrics
 
@@ -267,11 +281,24 @@ def main(args):
     # Load configuration
     config = load_config(args.config)
     
+    # Set up file logger
+    output_dir = os.path.join(config['logging']['log_dir'], 'evaluation')
+    os.makedirs(output_dir, exist_ok=True)
+    
+    file_handler = logging.FileHandler(os.path.join(output_dir, 'evaluation.log'))
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
+    
+    # Log configuration
+    logger.info(f"Evaluation configuration: {config}")
+    
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logger.info(f"Using device: {device}")
     
     # Get dataloaders
     _, _, test_loader = get_dataloaders(args.config)
+    logger.info(f"Test dataset loaded with {len(test_loader.dataset)} samples")
     
     # Get model
     model = get_model(config)
@@ -289,19 +316,33 @@ def main(args):
         )
     
     if not os.path.exists(checkpoint_path):
+        # Try to find the checkpoint in a timestamped directory
+        experiment_dirs = glob.glob(os.path.join(config['logging']['log_dir'], f"{config['logging']['experiment_name']}_*"))
+        if experiment_dirs:
+            # Use the most recent experiment
+            latest_dir = max(experiment_dirs, key=os.path.getctime)
+            potential_checkpoint = os.path.join(latest_dir, 'best_model.pth')
+            if os.path.exists(potential_checkpoint):
+                checkpoint_path = potential_checkpoint
+            else:
+                # Try the checkpoint directory
+                checkpoint_dirs = glob.glob(os.path.join(config['logging']['checkpoint_dir'], f"{config['logging']['experiment_name']}_*"))
+                if checkpoint_dirs:
+                    latest_checkpoint_dir = max(checkpoint_dirs, key=os.path.getctime)
+                    potential_checkpoint = os.path.join(latest_checkpoint_dir, 'best_model.pth')
+                    if os.path.exists(potential_checkpoint):
+                        checkpoint_path = potential_checkpoint
+    
+    if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
     
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     
-    print(f"Loaded checkpoint from {checkpoint_path}")
+    logger.info(f"Loaded checkpoint from {checkpoint_path}")
     
     # Define loss function
     criterion = nn.CrossEntropyLoss()
-    
-    # Create output directory
-    output_dir = os.path.join(config['logging']['log_dir'], 'evaluation')
-    os.makedirs(output_dir, exist_ok=True)
     
     # Evaluate model
     test_loss, test_metrics = evaluate(
@@ -314,14 +355,14 @@ def main(args):
         num_vis_samples=args.num_vis_samples
     )
     
-    print("Evaluation completed!")
+    logger.info("Evaluation completed!")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Evaluate Pipeline A: Point Cloud Classification')
     parser.add_argument('--config', type=str, default='src/pipelineA/config.yaml', help='Path to configuration file')
     parser.add_argument('--checkpoint', type=str, default=None, help='Path to model checkpoint')
     parser.add_argument('--visualize', action='store_true', help='Visualize results')
-    parser.add_argument('--num_vis_samples', type=int, default=10, help='Number of samples to visualize')
+    parser.add_argument('--num_vis_samples', type=int, default=20, help='Number of samples to visualize')
     args = parser.parse_args()
     
     main(args) 

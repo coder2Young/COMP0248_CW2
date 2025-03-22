@@ -1,8 +1,9 @@
 import os
 import sys
 import json
+import time
+import datetime
 
-# 添加项目根目录到Python路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 import torch
@@ -10,17 +11,16 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import argparse
-import time
 import yaml
 import random
 from tqdm import tqdm
 from sklearn.metrics import confusion_matrix
 
 from src.pipelineA.model import get_model
-from src.pipelineA.dataset import get_dataloaders, load_config
+from src.pipelineA.dataset import get_dataloaders
+from src.pipelineA.config import load_config, save_config
 from src.utils.metrics import compute_metrics_from_logits, compute_classification_metrics
 from src.utils.logging import TrainingLogger
-from src.utils.visualization import visualize_point_cloud, plot_confusion_matrix, plot_metrics_comparison
 
 def set_seed(seed):
     """
@@ -63,64 +63,57 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, logger, e
     # Enable gradient computation
     with torch.set_grad_enabled(True):
         for batch_idx, data in enumerate(tqdm(train_loader, desc=f"Epoch {epoch}")):
-            try:
-                # Get data
-                inputs = data['point_cloud'].to(device)
-                targets = data['label'].to(device)
+            # Get data
+            inputs = data['point_cloud'].to(device)
+            targets = data['label'].to(device)
+            
+            # Zero the parameter gradients
+            optimizer.zero_grad()
+            
+            # Forward pass
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            
+            # Backward pass and optimize
+            loss.backward()
+            optimizer.step()
+            
+            # Update metrics
+            epoch_loss += loss.item()
+            
+            # Convert outputs to predictions
+            preds = torch.argmax(outputs, dim=1)
+            
+            # Store predictions and targets for metrics computation
+            all_preds.extend(preds.cpu().numpy())
+            all_targets.extend(targets.cpu().numpy())
+            
+            # Log batch results
+            if batch_idx % config['logging']['log_interval'] == 0:
+                # Compute metrics for the current batch
+                batch_metrics = compute_metrics_from_logits(
+                    outputs, 
+                    targets,
+                    task='classification'
+                )
                 
-                # Zero the parameter gradients
-                optimizer.zero_grad()
-                
-                # Forward pass
-                outputs = model(inputs)
-                loss = criterion(outputs, targets)
-                
-                # Backward pass and optimize
-                loss.backward()
-                optimizer.step()
-                
-                # Update metrics
-                epoch_loss += loss.item()
-                
-                # Convert outputs to predictions
-                preds = torch.argmax(outputs, dim=1)
-                
-                # Store predictions and targets for metrics computation
-                all_preds.extend(preds.cpu().numpy())
-                all_targets.extend(targets.cpu().numpy())
-                
-                # Log batch results
-                if batch_idx % config['logging']['log_interval'] == 0:
-                    # Compute metrics for the current batch
-                    batch_metrics = compute_metrics_from_logits(
-                        outputs, 
-                        targets,
-                        task='classification'
-                    )
-                    
-                    # Log batch
-                    logger.log_batch(
-                        epoch=epoch,
-                        batch_idx=batch_idx,
-                        batch_size=inputs.size(0),
-                        data_size=len(train_loader.dataset),
-                        loss=loss.item(),
-                        lr=optimizer.param_groups[0]['lr'],
-                        metrics=batch_metrics,
-                        prefix='Train'
-                    )
-            except Exception as e:
-                print(f"Error processing batch {batch_idx} in epoch {epoch}: {e}")
-                continue
+                # Log batch
+                logger.log_batch(
+                    epoch=epoch,
+                    batch_idx=batch_idx,
+                    batch_size=inputs.size(0),
+                    data_size=len(train_loader.dataset),
+                    loss=loss.item(),
+                    lr=optimizer.param_groups[0]['lr'],
+                    metrics=batch_metrics,
+                    prefix='Train'
+                )
     
     # Compute average loss
     epoch_loss /= len(train_loader)
     
     # Compute metrics for the entire epoch
     if all_preds and all_targets:
-        # Create a proper tensor for metrics computation
-        # Note: compute_metrics_from_logits expects logits, not predictions
-        # Since we already have predictions, we'll compute metrics directly
         all_preds_np = np.array(all_preds)
         all_targets_np = np.array(all_targets)
         epoch_metrics = compute_classification_metrics(all_targets_np, all_preds_np)
@@ -136,7 +129,7 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, logger, e
     
     return epoch_loss, epoch_metrics
 
-def validate(model, dataloader, criterion, device, epoch, config):
+def validate(model, dataloader, criterion, device, epoch, logger):
     """
     Validate the model on the validation set.
     
@@ -146,7 +139,7 @@ def validate(model, dataloader, criterion, device, epoch, config):
         criterion (torch.nn.Module): Loss function
         device (torch.device): Device to use for validation
         epoch (int): Current epoch
-        config (dict): Configuration dictionary
+        logger (TrainingLogger): Logger
     
     Returns:
         tuple: (val_loss, val_metrics)
@@ -185,184 +178,25 @@ def validate(model, dataloader, criterion, device, epoch, config):
         np.array(all_preds)
     )
     
-    # Print metrics
-    print(f"Validation Loss: {val_loss:.6f}")
-    print(f"Validation Accuracy: {val_metrics['accuracy']:.4f}")
-    print(f"Validation Precision: {val_metrics['precision']:.4f}")
-    print(f"Validation Recall: {val_metrics['recall']:.4f}")
-    print(f"Validation F1 Score: {val_metrics['f1_score']:.4f}")
+    # Log metrics to tensorboard
+    if logger.use_tensorboard:
+        for metric_name, metric_value in val_metrics.items():
+            logger.writer.add_scalar(f'Val/{metric_name}', metric_value, epoch)
     
     # Create a confusion matrix
     cm = confusion_matrix(all_targets, all_preds)
-    print(f"Confusion Matrix:\n{cm}")
     
-    # Visualize results periodically
-    if epoch % config.get('visualization', {}).get('vis_frequency', 10) == 0:
-        # Create output directory for epoch visualizations
-        epoch_vis_dir = os.path.join(
-            config['logging']['log_dir'],
-            config['logging']['experiment_name'],
-            'visualizations',
-            f'epoch_{epoch}'
-        )
-        os.makedirs(epoch_vis_dir, exist_ok=True)
-        
-        # Plot confusion matrix
-        cm_plot_file = os.path.join(epoch_vis_dir, 'confusion_matrix.png')
-        plot_confusion_matrix(
-            conf_matrix=cm,
-            class_names=['No Table', 'Table'],
-            title=f'Confusion Matrix - Epoch {epoch}',
-            save_path=cm_plot_file
-        )
-        
-        # Plot metrics
-        metrics_plot_file = os.path.join(epoch_vis_dir, 'metrics.png')
-        metrics_to_plot = {
-            'Accuracy': val_metrics['accuracy'],
-            'Precision': val_metrics['precision'], 
-            'Recall': val_metrics['recall'],
-            'F1 Score': val_metrics['f1_score'],
-            'Specificity': val_metrics.get('specificity', 0)
-        }
-        plot_metrics_comparison(
-            metrics_dict=metrics_to_plot,
-            title=f"Performance Metrics - Epoch {epoch}",
-            save_path=metrics_plot_file
-        )
+    # Log metrics in a vertical format for better readability
+    logger.logger.info(f"Validation Metrics (Epoch {epoch}):")
+    logger.logger.info(f"  Loss:        {val_loss:.6f}")
+    logger.logger.info(f"  Accuracy:    {val_metrics['accuracy']:.4f}")
+    logger.logger.info(f"  Precision:   {val_metrics['precision']:.4f}")
+    logger.logger.info(f"  Recall:      {val_metrics['recall']:.4f}")
+    logger.logger.info(f"  F1 Score:    {val_metrics['f1_score']:.4f}")
+    logger.logger.info(f"  Specificity: {val_metrics['specificity']:.4f}")
+    logger.logger.info(f"  Confusion Matrix:\n{cm}")
     
     return val_loss, val_metrics
-
-def visualize_results(model, dataloader, device, config, num_samples=10):
-    """
-    Visualize classification results during training.
-    
-    Args:
-        model (torch.nn.Module): Model to visualize results for
-        dataloader (torch.utils.data.DataLoader): Data loader
-        device (torch.device): Device to use for evaluation
-        config (dict): Configuration dictionary
-        num_samples (int): Number of samples to visualize
-    """
-    model.eval()
-    
-    # Check if visualization is enabled
-    visualization_config = config.get('visualization', {})
-    if not visualization_config.get('enabled', True):
-        return
-        
-    # Check specific visualization types
-    rgb_viz_enabled = visualization_config.get('rgb_visualization', True)
-    pc_viz_enabled = visualization_config.get('point_cloud_visualization', True)
-    
-    if not rgb_viz_enabled and not pc_viz_enabled:
-        print("Both RGB and point cloud visualizations are disabled. Skipping visualization.")
-        return
-    
-    # Create output directory
-    output_dir = os.path.join(
-        config['logging']['log_dir'],
-        config['logging']['experiment_name'],
-        'visualizations'
-    )
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Class names for visualization
-    class_names = ['No Table', 'Table']
-    
-    # List to store samples for visualization
-    vis_samples = []
-    
-    with torch.no_grad():
-        for batch_idx, data in enumerate(dataloader):
-            # Get the point cloud, targets, and additional metadata
-            point_cloud = data['point_cloud'].to(device)
-            targets = data['label'].to(device)
-            
-            # Get sequence and subdir information if available
-            sequences = data.get('sequence', ['unknown'] * len(point_cloud))
-            subdirs = data.get('subdir', ['unknown'] * len(point_cloud))
-            
-            # Forward pass
-            outputs = model(point_cloud)
-            
-            # Convert outputs to predictions
-            preds = torch.argmax(outputs, dim=1)
-            probabilities = torch.softmax(outputs, dim=1)
-            
-            # Add samples to visualization list
-            for i in range(len(point_cloud)):
-                if len(vis_samples) >= num_samples:
-                    break
-                
-                vis_samples.append({
-                    'point_cloud': point_cloud[i].cpu().numpy(),
-                    'target': targets[i].cpu().item(),
-                    'pred': preds[i].cpu().item(),
-                    'confidence': probabilities[i][preds[i]].cpu().item(),
-                    'sequence': sequences[i] if isinstance(sequences, list) else 'unknown',
-                    'subdir': subdirs[i] if isinstance(subdirs, list) else 'unknown'
-                })
-            
-            if len(vis_samples) >= num_samples:
-                break
-    
-    print(f"Visualizing {len(vis_samples)} samples...")
-    
-    # Function to load RGB image for visualization
-    def load_rgb_image(sequence, subdir, data_root='data/CW2-Dataset/data'):
-        try:
-            import cv2
-            # Try to reconstruct the path to the RGB image
-            rgb_dir = os.path.join(data_root, sequence, subdir, 'image')
-            if os.path.exists(rgb_dir):
-                # Just get any image from this directory for visualization
-                rgb_files = sorted([f for f in os.listdir(rgb_dir) if f.endswith('.jpg')])
-                if rgb_files:
-                    rgb_path = os.path.join(rgb_dir, rgb_files[0])
-                    rgb_image = cv2.imread(rgb_path)
-                    rgb_image = cv2.cvtColor(rgb_image, cv2.COLOR_BGR2RGB)
-                    return rgb_image
-        except Exception as e:
-            print(f"Error loading RGB image: {e}")
-        return None
-    
-    # Visualize samples
-    for i, sample in enumerate(vis_samples):
-        # 1. Visualize the point cloud if enabled
-        if pc_viz_enabled:
-            pc_vis_file = os.path.join(output_dir, f'sample_{i}_pointcloud_gt_{sample["target"]}_pred_{sample["pred"]}.png')
-            
-            from src.utils.visualization import visualize_point_cloud
-            visualize_point_cloud(
-                point_cloud=sample['point_cloud'],
-                title=f'Ground Truth: {class_names[sample["target"]]}, '
-                      f'Predicted: {class_names[sample["pred"]]} '
-                      f'(Conf: {sample["confidence"]:.2f})',
-                save_path=pc_vis_file
-            )
-            print(f"Saved point cloud visualization to {pc_vis_file}")
-        
-        # 2. Visualize the RGB image with classification results if enabled
-        if rgb_viz_enabled:
-            rgb_image = load_rgb_image(sample['sequence'], sample['subdir'], config['data']['root'])
-            if rgb_image is not None:
-                rgb_vis_file = os.path.join(output_dir, f'sample_{i}_rgb_gt_{sample["target"]}_pred_{sample["pred"]}.png')
-                
-                from src.utils.visualization import visualize_classification_results
-                visualize_classification_results(
-                    rgb_image=rgb_image,
-                    ground_truth_label=sample['target'],
-                    predicted_label=sample['pred'],
-                    title=f'Sample {i} - {sample["sequence"]}/{sample["subdir"]}',
-                    class_names=class_names,
-                    confidence=sample['confidence'],
-                    save_path=rgb_vis_file
-                )
-                
-                print(f"Saved RGB visualization to {rgb_vis_file}")
-            else:
-                print(f"Could not load RGB image for sample {i} from {sample['sequence']}/{sample['subdir']}")
 
 def main(config_file):
     """
@@ -374,35 +208,53 @@ def main(config_file):
     # Load configuration
     config = load_config(config_file)
     
-    # Print debug information about config types
-    print("Configuration loaded:")
-    print(f"Training LR type: {type(config['training']['lr'])}, value: {config['training']['lr']}")
-    print(f"Weight decay type: {type(config['training']['weight_decay'])}, value: {config['training']['weight_decay']}")
-    print(f"Data batch size type: {type(config['data']['batch_size'])}, value: {config['data']['batch_size']}")
-    
     # Set random seed for reproducibility
     set_seed(42)
     
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
     
-    # Create directories
-    os.makedirs(config['logging']['log_dir'], exist_ok=True)
-    os.makedirs(config['logging']['checkpoint_dir'], exist_ok=True)
+    # Create timestamp for experiment
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    experiment_name = f"{config['logging']['experiment_name']}_{timestamp}"
+    
+    # Create directories with timestamp
+    experiment_dir = os.path.join(config['logging']['log_dir'], experiment_name)
+    checkpoint_dir = os.path.join(config['logging']['checkpoint_dir'], experiment_name)
+    
+    os.makedirs(experiment_dir, exist_ok=True)
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    # Create fixed tensorboard directory
+    tensorboard_dir = os.path.join('results/pipelineA/tb_logs')
+    os.makedirs(tensorboard_dir, exist_ok=True)
+    
+    # Update config with experiment name
+    config['logging']['experiment_dir'] = experiment_dir
+    config['logging']['timestamp'] = timestamp
+    
+    # Save the config
+    save_config(config, os.path.join(experiment_dir, 'config.json'))
     
     # Initialize logger
     logger = TrainingLogger(
-        log_dir=config['logging']['log_dir'],
-        experiment_name=config['logging']['experiment_name'],
-        use_tensorboard=config['logging']['use_tensorboard']
+        log_dir=experiment_dir,
+        experiment_name=experiment_name,
+        use_tensorboard=config['logging']['use_tensorboard'],
+        tensorboard_dir=tensorboard_dir
     )
+    
+    # Log start of training
+    logger.logger.info(f"Starting training experiment: {experiment_name}")
+    logger.logger.info(f"Using device: {device}")
     
     # Log hyperparameters
     logger.log_hyperparameters(config)
     
     # Get dataloaders
     train_loader, val_loader, test_loader = get_dataloaders(config_file)
+    logger.logger.info(f"Dataset loaded: {len(train_loader.dataset)} training, "
+                  f"{len(val_loader.dataset)} validation, {len(test_loader.dataset)} test samples")
     
     # Get model
     model = get_model(config)
@@ -411,56 +263,28 @@ def main(config_file):
     # Log model summary
     logger.log_model_summary(model, input_size=(1, config['data']['num_points'], 4 if config['data']['use_height'] else 3))
     
-    # Define loss function and optimizer
+    # Define loss function, optimizer and scheduler
     criterion = nn.CrossEntropyLoss()
     
-    # Create optimizer
-    if config['training']['optimizer'].lower() == 'adam':
-        print(f"Creating Adam optimizer with LR={config['training']['lr']} and weight_decay={config['training']['weight_decay']}")
-        optimizer = optim.Adam(
-            model.parameters(),
-            lr=float(config['training']['lr']),
-            weight_decay=float(config['training']['weight_decay'])
-        )
-    else:  # SGD
-        print(f"Creating SGD optimizer with LR={config['training']['lr']} and weight_decay={config['training']['weight_decay']}")
-        optimizer = optim.SGD(
-            model.parameters(),
-            lr=float(config['training']['lr']),
-            momentum=0.9,
-            weight_decay=float(config['training']['weight_decay'])
-        )
+    # Create optimizer (Adam only)
+    optimizer = optim.Adam(
+        model.parameters(),
+        lr=float(config['training']['lr']),
+        weight_decay=float(config['training']['weight_decay'])
+    )
     
-    # Create scheduler
-    if config['training']['scheduler'] == 'step':
-        print(f"Creating StepLR scheduler with step_size={config['training']['lr_decay_step']} and gamma={config['training']['lr_decay']}")
-        scheduler = optim.lr_scheduler.StepLR(
-            optimizer,
-            step_size=int(config['training']['lr_decay_step']),
-            gamma=float(config['training']['lr_decay'])
-        )
-    else:  # cosine
-        print(f"Creating CosineAnnealingLR scheduler with T_max={config['training']['epochs']}")
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=int(config['training']['epochs'])
-        )
+    # Create scheduler (StepLR only)
+    scheduler = optim.lr_scheduler.StepLR(
+        optimizer,
+        step_size=int(config['training']['lr_decay_step']),
+        gamma=float(config['training']['lr_decay'])
+    )
     
     # Training loop
     best_val_loss = float('inf')
+    best_val_f1 = 0.0
     patience = int(config['training']['early_stopping'])
     early_stopping_counter = 0
-    print(f"Early stopping patience: {patience}")
-    
-    # Define a function to save model
-    def save_model_fn(path):
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'scheduler_state_dict': scheduler.state_dict(),
-            'config': config
-        }, path)
     
     for epoch in range(1, config['training']['epochs'] + 1):
         # Train for one epoch
@@ -482,11 +306,16 @@ def main(config_file):
             criterion=criterion,
             device=device,
             epoch=epoch,
-            config=config
+            logger=logger
         )
         
         # Update learning rate
         scheduler.step()
+        
+        # Print train and val loss on the same line for comparison
+        logger.logger.info(f"Epoch {epoch}/{config['training']['epochs']} - "
+                     f"Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}, "
+                     f"LR: {scheduler.get_last_lr()[0]:.6f}")
         
         # Log epoch results
         logger.log_epoch(
@@ -495,50 +324,73 @@ def main(config_file):
             val_loss=val_loss,
             train_metrics=train_metrics,
             val_metrics=val_metrics,
-            lr=scheduler.get_last_lr()[0],
-            save_model_fn=save_model_fn
+            lr=scheduler.get_last_lr()[0]
         )
         
-        # Save checkpoint
-        if config['logging']['save_checkpoint']:
-            checkpoint_path = os.path.join(
-                config['logging']['checkpoint_dir'],
-                f'checkpoint_epoch_{epoch}.pth'
-            )
-            save_model_fn(checkpoint_path)
+        # Save the model checkpoint (latest model)
+        latest_checkpoint_path = os.path.join(checkpoint_dir, 'latest_model.pth')
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'train_loss': train_loss,
+            'val_loss': val_loss,
+            'train_metrics': train_metrics,
+            'val_metrics': val_metrics,
+            'config': config
+        }, latest_checkpoint_path)
         
-        # Check for early stopping
+        # Check for best model by validation loss
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            # Save best model by loss
+            best_loss_checkpoint_path = os.path.join(checkpoint_dir, 'best_loss_model.pth')
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'train_loss': train_loss,
+                'val_loss': val_loss,
+                'train_metrics': train_metrics,
+                'val_metrics': val_metrics,
+                'config': config
+            }, best_loss_checkpoint_path)
+            logger.logger.info(f"New best model (loss) saved at epoch {epoch}")
+            
+            # Reset early stopping counter
             early_stopping_counter = 0
         else:
             early_stopping_counter += 1
-            if early_stopping_counter >= patience:
-                print(f"Early stopping at epoch {epoch}, best epoch: {epoch - patience}")
-                break
         
-        # Visualize results periodically
-        if (epoch + 1) % config.get('visualization', {}).get('vis_frequency', 10) == 0 or epoch == config['training']['epochs']:
-            print(f"Visualizing results at epoch {epoch + 1}...")
-            visualize_results(
-                model=model,
-                dataloader=val_loader,
-                device=device,
-                config=config,
-                num_samples=config['visualization']['num_samples']
-            )
-    
-    # Save final model
-    final_model_path = os.path.join(
-        config['logging']['checkpoint_dir'],
-        'final_model.pth'
-    )
-    save_model_fn(final_model_path)
+        # Check for best model by F1 score
+        if val_metrics['f1_score'] > best_val_f1:
+            best_val_f1 = val_metrics['f1_score']
+            # Save best model by F1 score
+            best_f1_checkpoint_path = os.path.join(checkpoint_dir, 'best_model.pth')
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'train_loss': train_loss,
+                'val_loss': val_loss,
+                'train_metrics': train_metrics,
+                'val_metrics': val_metrics,
+                'config': config
+            }, best_f1_checkpoint_path)
+            logger.logger.info(f"New best model (F1 score) saved at epoch {epoch}")
+        
+        # Early stopping
+        if early_stopping_counter >= patience:
+            logger.logger.info(f"Early stopping triggered after {patience} epochs without improvement")
+            break
     
     # Close logger
     logger.close()
     
-    print("Training completed!")
+    logger.logger.info("Training completed!")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train Pipeline A: Point Cloud Classification')

@@ -18,14 +18,12 @@ model:
 
 # Training settings
 training:
-  epochs: 100
+  epochs: 200
   lr: 0.001
   weight_decay: 1e-4
   lr_decay: 0.7
   lr_decay_step: 10
-  optimizer: "adam"  # "adam" or "sgd"
-  scheduler: "step"  # "step" or "cosine"
-  early_stopping: 10  # Number of epochs with no improvement after which training will be stopped
+  early_stopping: 30  # Number of epochs with no improvement after which training will be stopped
 
 # Logging settings
 logging:
@@ -38,8 +36,4 @@ logging:
 
 # Visualization settings
 visualization:
-  enabled: True
-  num_samples: 10
-  vis_frequency: 10  # Visualize every 5 epochs
-  rgb_visualization: True  # Enable RGB image visualization
-  point_cloud_visualization: False  # Enable point cloud visualization 
+  num_samples: 20  # Number of samples to visualize in evaluation 
