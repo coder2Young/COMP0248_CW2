@@ -1,0 +1,45 @@
+# Configuration file for Pipeline C: Point Cloud Segmentation
+
+# Data settings
+data:
+  root: "data/CW2-Dataset/data"
+  num_points: 4096  # Number of points per point cloud
+  num_workers: 4
+  batch_size: 16
+  use_height: true  # Use height as additional feature
+
+# Model settings
+model:
+  name: "dgcnn"  # Options: "dgcnn", "pointnet2"
+  k: 20          # Number of nearest neighbors for DGCNN
+  emb_dims: 1024  # Embedding dimensions
+  dropout: 0.5    # Dropout rate
+  num_classes: 2  # Binary segmentation: Table vs Background
+
+# Training settings
+training:
+  epochs: 100
+  lr: 0.001
+  weight_decay: 1e-4
+  lr_decay: 0.7
+  lr_decay_step: 20
+  early_stopping: 15  # Number of epochs with no improvement after which training will be stopped
+
+# Loss settings
+loss:
+  class_weights: [1.0, 2.0]  # Weight more importance to table points due to class imbalance
+  use_weighted_loss: true
+
+# Logging settings
+logging:
+  log_dir: "results/pipelineC"
+  experiment_name: "pointcloud_segmentation"
+  use_tensorboard: true
+  log_interval: 10  # Log every 10 batches
+  save_checkpoint: true
+  checkpoint_dir: "weights/pipelineC"
+
+# Visualization settings
+visualization:
+  num_samples: 10  # Number of samples to visualize in evaluation
+  visualize_rgb: true  # Also visualize RGB images alongside point clouds 

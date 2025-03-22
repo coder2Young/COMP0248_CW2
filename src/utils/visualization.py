@@ -137,7 +137,7 @@ def visualize_point_cloud_open3d(point_cloud, labels=None, title='Point Cloud', 
     vis.destroy_window()
 
 def visualize_segmentation_results(rgb_image, depth_map, ground_truth_mask, predicted_mask=None, 
-                                  title='Segmentation Results', save_path=None, figsize=(15, 10)):
+                                 title='Segmentation Results', save_path=None, figsize=(15, 10)):
     """
     Visualize segmentation results.
     
@@ -419,4 +419,138 @@ def plot_metrics_comparison(metrics_dict, title="Performance Metrics", save_path
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
     else:
+        plt.show()
+
+def visualize_point_cloud_segmentation(point_cloud, point_colors=None, target_labels=None, pred_labels=None, 
+                                    rgb_image=None, title='Point Cloud Segmentation', save_path=None, figsize=(15, 8)):
+    """
+    Visualize segmentation results for point clouds with optional RGB image.
+    
+    Args:
+        point_cloud (numpy.ndarray): Point cloud of shape (N, 3)
+        point_colors (numpy.ndarray, optional): Point colors of shape (N, 3)
+        target_labels (numpy.ndarray, optional): Target labels of shape (N,)
+        pred_labels (numpy.ndarray, optional): Predicted labels of shape (N,)
+        rgb_image (numpy.ndarray, optional): RGB image to display alongside the point cloud
+        title (str): Title for the plot
+        save_path (str, optional): Path to save the visualization
+        figsize (tuple): Figure size (width, height)
+    """
+    # Convert to numpy array if needed
+    if isinstance(point_cloud, torch.Tensor):
+        point_cloud = point_cloud.detach().cpu().numpy()
+    
+    if point_colors is not None and isinstance(point_colors, torch.Tensor):
+        point_colors = point_colors.detach().cpu().numpy()
+    
+    if target_labels is not None and isinstance(target_labels, torch.Tensor):
+        target_labels = target_labels.detach().cpu().numpy()
+    
+    if pred_labels is not None and isinstance(pred_labels, torch.Tensor):
+        pred_labels = pred_labels.detach().cpu().numpy()
+    
+    # Determine the number of plots needed
+    has_rgb = rgb_image is not None
+    has_pred = pred_labels is not None
+    
+    if has_rgb and has_pred:
+        # RGB + Target + Prediction
+        n_plots = 3
+    elif has_rgb or has_pred:
+        # RGB + Target or Target + Prediction
+        n_plots = 2
+    else:
+        # Target only
+        n_plots = 1
+    
+    # Create figure
+    fig = plt.figure(figsize=figsize)
+    
+    # Add RGB image if available
+    plot_idx = 1
+    if has_rgb:
+        ax_rgb = fig.add_subplot(1, n_plots, plot_idx)
+        ax_rgb.imshow(rgb_image)
+        ax_rgb.set_title('RGB Image')
+        ax_rgb.axis('off')
+        plot_idx += 1
+    
+    # Add target point cloud
+    ax_target = fig.add_subplot(1, n_plots, plot_idx, projection='3d')
+    
+    # Define colors for target labels
+    if target_labels is not None:
+        target_colors = np.zeros((len(point_cloud), 3))
+        target_colors[target_labels == 0] = [0, 0, 1]  # Blue for background
+        target_colors[target_labels == 1] = [1, 0, 0]  # Red for table
+    elif point_colors is not None:
+        # Use provided point colors
+        target_colors = point_colors
+    else:
+        # Use a default color
+        target_colors = np.array([[0, 0.651, 0.929]] * len(point_cloud))  # Azure
+    
+    # Plot target point cloud
+    ax_target.scatter(
+        point_cloud[:, 0],
+        point_cloud[:, 1],
+        point_cloud[:, 2],
+        c=target_colors,
+        s=5,  # point size
+        alpha=0.8  # transparency
+    )
+    
+    # Set title and labels
+    ax_target.set_title('Ground Truth\nBlue: Background, Red: Table')
+    ax_target.set_xlabel('X')
+    ax_target.set_ylabel('Y')
+    ax_target.set_zlabel('Z')
+    
+    # Set equal aspect ratio
+    ax_target.set_box_aspect([1, 1, 1])
+    
+    # Adjust view angle
+    ax_target.view_init(elev=30, azim=45)
+    
+    # Add prediction point cloud if available
+    if has_pred:
+        plot_idx += 1
+        ax_pred = fig.add_subplot(1, n_plots, plot_idx, projection='3d')
+        
+        # Define colors for predicted labels
+        pred_colors = np.zeros((len(point_cloud), 3))
+        pred_colors[pred_labels == 0] = [0, 0, 1]  # Blue for background
+        pred_colors[pred_labels == 1] = [1, 0, 0]  # Red for table
+        
+        # Plot predicted point cloud
+        ax_pred.scatter(
+            point_cloud[:, 0],
+            point_cloud[:, 1],
+            point_cloud[:, 2],
+            c=pred_colors,
+            s=5,  # point size
+            alpha=0.8  # transparency
+        )
+        
+        # Set title and labels
+        ax_pred.set_title('Prediction\nBlue: Background, Red: Table')
+        ax_pred.set_xlabel('X')
+        ax_pred.set_ylabel('Y')
+        ax_pred.set_zlabel('Z')
+        
+        # Set equal aspect ratio
+        ax_pred.set_box_aspect([1, 1, 1])
+        
+        # Adjust view angle to match target
+        ax_pred.view_init(elev=30, azim=45)
+    
+    # Set overall title
+    plt.suptitle(title, fontsize=16)
+    
+    # Save figure if save_path is provided
+    if save_path is not None:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+    else:
+        plt.tight_layout()
         plt.show() 

@@ -68,6 +68,12 @@ def compute_segmentation_metrics(y_true, y_pred, num_classes=2):
     y_true = y_true.flatten()
     y_pred = y_pred.flatten()
     
+    # Check if we have data for both classes
+    unique_true = np.unique(y_true)
+    unique_pred = np.unique(y_pred)
+    unique_labels = np.unique(np.concatenate([unique_true, unique_pred]))
+    actual_num_classes = len(unique_labels)
+    
     # Compute per-class metrics
     accuracy = accuracy_score(y_true, y_pred)
     
@@ -82,16 +88,34 @@ def compute_segmentation_metrics(y_true, y_pred, num_classes=2):
     
     # Compute per-class metrics (for binary segmentation)
     if num_classes == 2:
-        precision_table = precision_score(y_true, y_pred, average=None, zero_division=0)[1]
-        recall_table = recall_score(y_true, y_pred, average=None, zero_division=0)[1]
-        f1_table = f1_score(y_true, y_pred, average=None, zero_division=0)[1]
+        # Get per-class scores (safely handling cases where only one class is present)
+        per_class_precision = precision_score(y_true, y_pred, average=None, zero_division=0)
+        per_class_recall = recall_score(y_true, y_pred, average=None, zero_division=0)
+        per_class_f1 = f1_score(y_true, y_pred, average=None, zero_division=0)
+        
+        # Initialize with default values
+        precision_table = 0.0
+        recall_table = 0.0
+        f1_table = 0.0
+        
+        # Check if class 1 (table) is present in the scores
+        if 1 in unique_labels and len(per_class_precision) > 1:
+            precision_table = per_class_precision[1]
+            recall_table = per_class_recall[1]
+            f1_table = per_class_f1[1]
     else:
         precision_table = np.nan
         recall_table = np.nan
         f1_table = np.nan
     
-    # Compute IoU for table class
-    conf_matrix = confusion_matrix(y_true, y_pred, labels=list(range(num_classes)))
+    # Compute IoU for each class
+    # Always create confusion matrix with all classes (0 to num_classes-1)
+    # This ensures we have the expected dimensions even when only one class is present
+    conf_matrix = confusion_matrix(
+        y_true, 
+        y_pred, 
+        labels=list(range(num_classes))
+    )
     
     iou_list = []
     for cls in range(num_classes):
@@ -105,10 +129,13 @@ def compute_segmentation_metrics(y_true, y_pred, num_classes=2):
     # For binary segmentation, extract IoU for table class
     if num_classes == 2:
         table_iou = iou_list[1]
+        background_iou = iou_list[0]
     else:
         table_iou = np.nan
+        background_iou = np.nan
     
-    return {
+    # Create metrics dictionary
+    metrics = {
         'accuracy': accuracy,
         'precision_macro': precision_macro,
         'recall_macro': recall_macro,
@@ -122,6 +149,17 @@ def compute_segmentation_metrics(y_true, y_pred, num_classes=2):
         'mean_iou': mean_iou,
         'table_iou': table_iou
     }
+    
+    # Add class-specific IoU values
+    if num_classes == 2:
+        metrics['iou_0'] = background_iou  # Background class IoU
+        metrics['iou_1'] = table_iou  # Table class IoU
+    
+    # Add per-class metrics for multi-class segmentation
+    for cls in range(num_classes):
+        metrics[f'iou_{cls}'] = iou_list[cls]
+    
+    return metrics
 
 def compute_metrics_from_logits(logits, targets, task='classification'):
     """
