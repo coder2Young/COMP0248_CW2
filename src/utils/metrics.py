@@ -117,6 +117,9 @@ def compute_segmentation_metrics(y_true, y_pred, num_classes=2):
         labels=list(range(num_classes))
     )
     
+    # Class names for better readability
+    class_names = ["background", "table"] if num_classes == 2 else [f"class_{i}" for i in range(num_classes)]
+    
     iou_list = []
     for cls in range(num_classes):
         intersection = conf_matrix[cls, cls]
@@ -126,15 +129,7 @@ def compute_segmentation_metrics(y_true, y_pred, num_classes=2):
     
     mean_iou = np.mean(iou_list)
     
-    # For binary segmentation, extract IoU for table class
-    if num_classes == 2:
-        table_iou = iou_list[1]
-        background_iou = iou_list[0]
-    else:
-        table_iou = np.nan
-        background_iou = np.nan
-    
-    # Create metrics dictionary
+    # Create metrics dictionary with standardized naming
     metrics = {
         'accuracy': accuracy,
         'precision_macro': precision_macro,
@@ -147,17 +142,11 @@ def compute_segmentation_metrics(y_true, y_pred, num_classes=2):
         'recall_table': recall_table,
         'f1_table': f1_table,
         'mean_iou': mean_iou,
-        'table_iou': table_iou
     }
     
-    # Add class-specific IoU values
-    if num_classes == 2:
-        metrics['iou_0'] = background_iou  # Background class IoU
-        metrics['iou_1'] = table_iou  # Table class IoU
-    
-    # Add per-class metrics for multi-class segmentation
+    # Add class-specific IoU values with descriptive names
     for cls in range(num_classes):
-        metrics[f'iou_{cls}'] = iou_list[cls]
+        metrics[f'iou_{class_names[cls]}'] = iou_list[cls]
     
     return metrics
 

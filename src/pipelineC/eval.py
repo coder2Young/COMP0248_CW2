@@ -65,12 +65,12 @@ def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, 
     Evaluate the model on the test set.
     
     Args:
-        model (torch.nn.Module): Model to evaluate
-        dataloader (torch.utils.data.DataLoader): Test data loader
-        criterion (torch.nn.Module): Loss function
-        device (torch.device): Device to use for evaluation
-        output_dir (str): Directory to save results
-        visualize (bool): Whether to visualize results
+        model (nn.Module): Model to evaluate
+        dataloader (DataLoader): Test data loader
+        criterion (nn.Module): Loss function
+        device (torch.device): Device to use
+        output_dir (str): Directory to save outputs
+        visualize (bool): Whether to visualize predictions
         num_vis_samples (int): Number of samples to visualize
     
     Returns:
@@ -80,80 +80,72 @@ def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, 
     test_loss = 0.0
     all_preds = []
     all_targets = []
-    
-    # For visualization
     vis_samples = []
     
-    # Create directories for outputs
+    # Create output directories
     os.makedirs(output_dir, exist_ok=True)
-    if visualize:
-        vis_dir = os.path.join(output_dir, 'visualizations')
-        os.makedirs(vis_dir, exist_ok=True)
+    vis_dir = os.path.join(output_dir, 'visualizations')
+    os.makedirs(vis_dir, exist_ok=True)
     
-    logger.info("Starting evaluation...")
+    # Progress bar for evaluation
+    pbar = tqdm(dataloader, desc="Evaluating")
     
     with torch.no_grad():
-        for batch_idx, data in enumerate(tqdm(dataloader, desc="Testing")):
+        for batch_idx, data in enumerate(pbar):
             # Get data
-            inputs = data['point_features'].permute(0, 2, 1).to(device)  # (B, C, N)
-            targets = data['point_labels'].to(device)  # (B, N)
+            inputs = data['point_cloud'].to(device)
+            targets = data['labels'].to(device)
             
             # Forward pass
-            outputs = model(inputs)  # (B, num_classes, N)
+            outputs = model(inputs)
+            
+            # Calculate loss
             loss = criterion(outputs, targets)
             
-            # Convert outputs to predictions
-            preds = torch.argmax(outputs, dim=1)  # (B, N)
-            
-            # Check if model is making varied predictions
-            num_unique_preds = torch.unique(preds).size(0)
-            if num_unique_preds == 1:
-                logger.info(f"Evaluation: Model predicting only one class: {preds[0, 0].item()}")
-            
-            # Update metrics
+            # Update loss
             test_loss += loss.item()
             
-            # Store predictions and targets for metrics computation
-            for i in range(targets.size(0)):
-                all_preds.append(preds[i].cpu().numpy())
-                all_targets.append(targets[i].cpu().numpy())
+            # Calculate predictions
+            preds = torch.argmax(outputs, dim=1)
+            
+            # Update progress bar
+            pbar.set_postfix({
+                'test_loss': f"{loss.item():.4f}",
+                'avg_loss': f"{test_loss / (batch_idx + 1):.4f}"
+            })
+            
+            # Store predictions and targets for metrics calculation
+            all_preds.append(preds.cpu().numpy())
+            all_targets.append(targets.cpu().numpy())
             
             # Store samples for visualization
             if visualize and len(vis_samples) < num_vis_samples:
                 for i in range(min(inputs.size(0), num_vis_samples - len(vis_samples))):
-                    # Get the original point cloud
-                    point_features = data['point_features'][i].cpu().numpy()
+                    # Get point features
+                    point_features = data['point_features'][i].cpu().numpy() if 'point_features' in data else None
                     
-                    # Get sequence and subdir info
-                    sequence = None
-                    subdir = None
+                    # If no point features available, use simplified representation
+                    if point_features is None:
+                        point_features = np.zeros((inputs.size(2), 3))
+                        point_features[:, 0] = np.linspace(-1, 1, inputs.size(2))
+                        point_features[:, 1] = np.linspace(-1, 1, inputs.size(2))
                     
-                    if hasattr(dataloader.dataset, 'dataset'):
-                        # For data.Subset
-                        if hasattr(dataloader.dataset.dataset, 'data_pairs'):
-                            if batch_idx * dataloader.batch_size + i < len(dataloader.dataset.dataset.data_pairs):
-                                idx = dataloader.dataset.indices[batch_idx * dataloader.batch_size + i]
-                                sequence = dataloader.dataset.dataset.data_pairs[idx].get('sequence', None)
-                                subdir = dataloader.dataset.dataset.data_pairs[idx].get('subdir', None)
-                    elif hasattr(dataloader.dataset, 'data_pairs'):
-                        # For direct dataset
-                        if batch_idx * dataloader.batch_size + i < len(dataloader.dataset.data_pairs):
-                            sequence = dataloader.dataset.data_pairs[batch_idx * dataloader.batch_size + i].get('sequence', None)
-                            subdir = dataloader.dataset.data_pairs[batch_idx * dataloader.batch_size + i].get('subdir', None)
-                    
-                    # Get RGB image if sequence and subdir are available
+                    # Get RGB image if available
                     rgb_image = None
-                    if sequence and subdir:
-                        rgb_image = load_rgb_image(sequence, subdir, dataloader.dataset.dataset.data_root 
-                            if hasattr(dataloader.dataset, 'dataset') else dataloader.dataset.data_root)
+                    sequence = data.get('sequence', ['unknown'])[i] if isinstance(data.get('sequence', ['unknown']), list) else 'unknown'
+                    subdir = data.get('subdir', ['unknown'])[i] if isinstance(data.get('subdir', ['unknown']), list) else 'unknown'
+                    
+                    # Try to load RGB image
+                    if sequence != 'unknown' and subdir != 'unknown':
+                        rgb_image = load_rgb_image(sequence, subdir)
                     
                     vis_samples.append({
                         'point_features': point_features,
                         'target_labels': targets[i].cpu().numpy(),
                         'predicted_labels': preds[i].cpu().numpy(),
                         'rgb_image': rgb_image,
-                        'sequence': sequence if sequence else 'unknown',
-                        'subdir': subdir if subdir else 'unknown'
+                        'sequence': sequence,
+                        'subdir': subdir
                     })
     
     # Compute average loss
@@ -173,65 +165,60 @@ def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, 
     bg_points_pred = np.sum(flat_preds == 0)
     total_points = len(flat_targets)
     
-    logger.info("===== Point Cloud Segmentation Statistics =====")
-    logger.info(f"Total points evaluated: {total_points}")
-    logger.info(f"Ground Truth: Background: {bg_points_gt} ({bg_points_gt/total_points*100:.2f}%), "
-              f"Table: {table_points_gt} ({table_points_gt/total_points*100:.2f}%)")
-    logger.info(f"Predictions: Background: {bg_points_pred} ({bg_points_pred/total_points*100:.2f}%), "
-              f"Table: {table_points_pred} ({table_points_pred/total_points*100:.2f}%)")
+    # Print evaluation summary with standardized format
+    print("\nTest Results:")
+    print(f"  Loss:            {test_loss:.4f}")
+    print(f"  Accuracy:        {test_metrics['accuracy']:.4f}")
+    print(f"  Mean IoU:        {test_metrics['mean_iou']:.4f}")
+    print(f"  Background IoU:  {test_metrics['iou_background']:.4f}")
+    print(f"  Table IoU:       {test_metrics['iou_table']:.4f}")
+    print(f"  F1 Score:        {test_metrics.get('f1_weighted', 0.0):.4f}")
     
-    # Log metrics in a vertical format for better readability
-    logger.info("===== Evaluation Metrics =====")
-    logger.info(f"Test Loss:          {test_loss:.6f}")
-    logger.info(f"Accuracy:           {test_metrics['accuracy']:.4f}")
-    logger.info(f"IoU (Background):   {test_metrics.get('iou_0', 0.0):.4f}")
-    logger.info(f"IoU (Table):        {test_metrics.get('iou_1', 0.0):.4f}")
-    logger.info(f"Mean IoU:           {test_metrics['mean_iou']:.4f}")
-    logger.info(f"Precision:          {test_metrics.get('precision_weighted', test_metrics.get('precision_macro', 0.0)):.4f}")
-    logger.info(f"Recall:             {test_metrics.get('recall_weighted', test_metrics.get('recall_macro', 0.0)):.4f}")
-    logger.info(f"F1 Score:           {test_metrics.get('f1_weighted', test_metrics.get('f1_macro', 0.0)):.4f}")
+    # Print point distribution statistics
+    print("\nPoint Distribution:")
+    print(f"  Ground Truth: Background: {bg_points_gt} ({bg_points_gt/total_points*100:.2f}%), "
+          f"Table: {table_points_gt} ({table_points_gt/total_points*100:.2f}%)")
+    print(f"  Predictions: Background: {bg_points_pred} ({bg_points_pred/total_points*100:.2f}%), "
+          f"Table: {table_points_pred} ({table_points_pred/total_points*100:.2f}%)")
     
-    # Print confusion matrix
-    cm = confusion_matrix(flat_targets, flat_preds, labels=[0, 1])
-    logger.info("===== Confusion Matrix =====")
-    logger.info("GT\\Pred\tBackground(0)\tTable(1)")
-    logger.info(f"BG(0)\t{cm[0][0]}\t\t{cm[0][1]}")
-    logger.info(f"Table(1)\t{cm[1][0]}\t\t{cm[1][1]}")
-    
-    # Save metrics to JSON file
+    # Save metrics to file
     metrics_file = os.path.join(output_dir, 'metrics.json')
     with open(metrics_file, 'w') as f:
         json.dump({
-            'loss': float(test_loss),
+            'loss': test_loss,
             'accuracy': float(test_metrics['accuracy']),
-            'iou_background': float(test_metrics.get('iou_0', 0.0)),
-            'iou_table': float(test_metrics.get('iou_1', 0.0)),
             'mean_iou': float(test_metrics['mean_iou']),
-            'precision': float(test_metrics.get('precision_weighted', test_metrics.get('precision_macro', 0.0))),
-            'recall': float(test_metrics.get('recall_weighted', test_metrics.get('recall_macro', 0.0))),
-            'f1_score': float(test_metrics.get('f1_weighted', test_metrics.get('f1_macro', 0.0))),
-            'confusion_matrix': cm.tolist()
+            'iou_background': float(test_metrics['iou_background']),
+            'iou_table': float(test_metrics['iou_table']),
+            'f1_weighted': float(test_metrics.get('f1_weighted', 0.0)),
+            'precision_weighted': float(test_metrics.get('precision_weighted', 0.0)),
+            'recall_weighted': float(test_metrics.get('recall_weighted', 0.0)),
+            'point_distribution': {
+                'ground_truth': {
+                    'background': int(bg_points_gt),
+                    'table': int(table_points_gt),
+                    'background_percent': float(bg_points_gt/total_points*100),
+                    'table_percent': float(table_points_gt/total_points*100)
+                },
+                'predictions': {
+                    'background': int(bg_points_pred),
+                    'table': int(table_points_pred),
+                    'background_percent': float(bg_points_pred/total_points*100),
+                    'table_percent': float(table_points_pred/total_points*100)
+                }
+            }
         }, f, indent=4)
     
-    # Plot confusion matrix
-    cm_plot_file = os.path.join(output_dir, 'confusion_matrix.png')
-    plot_confusion_matrix(
-        conf_matrix=cm,
-        class_names=['Background', 'Table'],
-        title='Confusion Matrix',
-        save_path=cm_plot_file
-    )
+    print(f"Metrics saved to {metrics_file}")
     
-    # Plot metrics comparison
-    metrics_plot_file = os.path.join(output_dir, 'metrics_comparison.png')
+    # Plot metrics
+    metrics_plot_file = os.path.join(output_dir, 'metrics_plot.png')
     metrics_to_plot = {
         'Accuracy': test_metrics['accuracy'],
         'Mean IoU': test_metrics['mean_iou'],
-        'IoU (BG)': test_metrics.get('iou_0', 0.0),
-        'IoU (Table)': test_metrics.get('iou_1', 0.0),
-        'Precision': test_metrics.get('precision_weighted', test_metrics.get('precision_macro', 0.0)), 
-        'Recall': test_metrics.get('recall_weighted', test_metrics.get('recall_macro', 0.0)),
-        'F1 Score': test_metrics.get('f1_weighted', test_metrics.get('f1_macro', 0.0))
+        'IoU (BG)': test_metrics['iou_background'],
+        'IoU (Table)': test_metrics['iou_table'],
+        'F1 Score': test_metrics.get('f1_weighted', 0.0)
     }
     plot_metrics_comparison(
         metrics_dict=metrics_to_plot,
@@ -241,7 +228,7 @@ def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, 
     
     # Visualize segmentation results
     if visualize and vis_samples:
-        logger.info(f"Visualizing {len(vis_samples)} samples...")
+        print(f"Visualizing {len(vis_samples)} samples...")
         
         for i, sample in enumerate(vis_samples):
             vis_file = os.path.join(vis_dir, f'sample_{i}_seq_{sample["sequence"]}.png')
@@ -256,7 +243,7 @@ def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, 
                 save_path=vis_file
             )
             
-            logger.info(f"Saved visualization to {vis_file}")
+            print(f"Saved visualization to {vis_file}")
     
     return test_loss, test_metrics
 
