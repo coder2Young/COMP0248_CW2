@@ -10,23 +10,102 @@ from PIL import Image
 from src.data_utils.dataset import Sun3DBaseDataset, DatasetSplitter
 from src.pipelineB.config import load_config
 
+def resize_with_center_crop(image, target_size):
+    """
+    Resize image by scaling down to fit target size while preserving aspect ratio,
+    then center crop to the target size.
+    
+    Args:
+        image (numpy.ndarray): Input image (H, W, C) or (H, W) for depth maps
+        target_size (tuple): Target size (height, width)
+    
+    Returns:
+        numpy.ndarray: Resized and cropped image
+    """
+    target_height, target_width = target_size
+    
+    # Get current dimensions
+    if len(image.shape) == 3:
+        # RGB image
+        h, w, _ = image.shape
+    else:
+        # Depth map
+        h, w = image.shape
+    
+    # Calculate scaling factor to make the smaller dimension exactly target size
+    scale = min(target_height / h, target_width / w)
+    
+    # Calculate new dimensions
+    new_h, new_w = int(h * scale), int(w * scale)
+    
+    # Resize while preserving aspect ratio
+    if len(image.shape) == 3:
+        # RGB image (interpolation=INTER_LINEAR)
+        resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    else:
+        # Depth map (interpolation=INTER_NEAREST to preserve depth values)
+        resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+    
+    # Center crop to target size
+    # Calculate crop offsets
+    start_y = max(0, (new_h - target_height) // 2)
+    start_x = max(0, (new_w - target_width) // 2)
+    
+    # Perform the crop
+    if len(resized.shape) == 3:
+        # RGB image
+        cropped = resized[start_y:start_y + target_height, start_x:start_x + target_width, :]
+    else:
+        # Depth map
+        cropped = resized[start_y:start_y + target_height, start_x:start_x + target_width]
+    
+    # Handle edge cases where the resized image is smaller than the target
+    # (this shouldn't happen with our approach but just in case)
+    if cropped.shape[0] < target_height or cropped.shape[1] < target_width:
+        # Create target sized image
+        if len(image.shape) == 3:
+            # RGB image
+            result = np.zeros((target_height, target_width, image.shape[2]), dtype=image.dtype)
+        else:
+            # Depth map
+            result = np.zeros((target_height, target_width), dtype=image.dtype)
+        
+        # Calculate paste position
+        paste_y = (target_height - cropped.shape[0]) // 2
+        paste_x = (target_width - cropped.shape[1]) // 2
+        
+        # Paste the image
+        if len(image.shape) == 3:
+            # RGB image
+            result[paste_y:paste_y + cropped.shape[0], paste_x:paste_x + cropped.shape[1], :] = cropped
+        else:
+            # Depth map
+            result[paste_y:paste_y + cropped.shape[0], paste_x:paste_x + cropped.shape[1]] = cropped
+        
+        return result
+    
+    return cropped
+
 class RGBClassificationDataset(Sun3DBaseDataset):
     """
-    Dataset class for RGB-based classification with depth estimation.
+    Dataset for RGB-based classification using monocular depth estimation.
     """
-    def __init__(self, data_root, sequences, split='train', transform=None, image_size=224):
+    def __init__(self, data_root, sequences, split='train', transform=None, image_size=384):
         """
-        Initialize the RGB classification dataset.
+        Initialize the dataset.
         
         Args:
             data_root (str): Root directory of the dataset
             sequences (list): List of sequences to include
-            split (str): 'train', 'val', or 'test'
-            transform (callable, optional): Optional transform to be applied on RGB images
-            image_size (int): Size to resize images to
+            split (str): 'train' or 'test'
+            transform (callable, optional): Optional transform to be applied on a sample
+            image_size (int): Target image size
         """
-        super().__init__(data_root, sequences, split, transform)
+        super().__init__(data_root, sequences, split)
+        self.transform = transform
         self.image_size = image_size
+        
+        # Define normalization for pre-trained models
         self.normalize = transforms.Normalize(
             mean=[0.485, 0.456, 0.406],
             std=[0.229, 0.224, 0.225]
@@ -40,7 +119,7 @@ class RGBClassificationDataset(Sun3DBaseDataset):
             idx (int): Index
         
         Returns:
-            dict: A data sample including RGB image and labels
+            dict: A data sample including RGB image, depth map, and labels
         """
         # Get base sample from Sun3DBaseDataset
         sample = super().__getitem__(idx)
@@ -48,8 +127,8 @@ class RGBClassificationDataset(Sun3DBaseDataset):
         # Get RGB image
         rgb_image = sample['rgb_image']
         
-        # Resize image to the required size
-        rgb_image = cv2.resize(rgb_image, (self.image_size, self.image_size))
+        # Resize image using center crop to the required size
+        rgb_image = resize_with_center_crop(rgb_image, (self.image_size, self.image_size))
         
         # Convert to tensor
         rgb_tensor = torch.from_numpy(rgb_image.transpose(2, 0, 1).astype(np.float32) / 255.0)
@@ -64,9 +143,27 @@ class RGBClassificationDataset(Sun3DBaseDataset):
         # Get label
         label = torch.tensor(sample['binary_label'], dtype=torch.long)
         
+        # Get ground truth depth map if available
+        gt_depth = None
+        if 'depth_map' in sample and sample['depth_map'] is not None:
+            # The depth map is already converted to meters in the base class
+            depth_map = sample['depth_map'].astype(np.float32)
+            
+            # Resize depth using the same center crop approach
+            if depth_map is not None:
+                gt_depth = resize_with_center_crop(depth_map, (self.image_size, self.image_size))
+                
+                # Convert to tensor
+                gt_depth = torch.from_numpy(gt_depth.astype(np.float32))
+                
+                # If depth is 3D (H,W,1), convert to 2D (H,W)
+                if gt_depth.dim() == 3 and gt_depth.shape[2] == 1:
+                    gt_depth = gt_depth.squeeze(2)
+        
         # Create the final sample dictionary
         rgb_sample = {
             'rgb_image': rgb_tensor,
+            'gt_depth': gt_depth,
             'label': label,
             'sequence': sample['sequence'],
             'subdir': sample['subdir'],
@@ -74,6 +171,15 @@ class RGBClassificationDataset(Sun3DBaseDataset):
         }
         
         return rgb_sample
+    
+    def __len__(self):
+        """
+        Get the number of samples in the dataset.
+        
+        Returns:
+            int: Number of samples
+        """
+        return len(self.data_pairs)
 
 class RGBTransform:
     """

@@ -173,4 +173,75 @@ def compute_metrics_from_logits(logits, targets, task='classification'):
         
         # Compute segmentation metrics
         num_classes = logits.shape[1] if logits.shape[1] > 1 else 2
-        return compute_segmentation_metrics(targets, preds, num_classes=num_classes) 
+        return compute_segmentation_metrics(targets, preds, num_classes=num_classes)
+
+def compute_depth_metrics(pred_depth, gt_depth, mask=None):
+    """
+    Compute metrics for depth estimation.
+    
+    Args:
+        pred_depth (torch.Tensor or np.ndarray): Predicted depth map
+        gt_depth (torch.Tensor or np.ndarray): Ground truth depth map
+        mask (torch.Tensor or np.ndarray, optional): Mask for valid depth values
+    
+    Returns:
+        dict: Dictionary containing depth estimation metrics
+    """
+    import torch
+    import numpy as np
+    
+    # Convert to numpy arrays if they are torch tensors
+    if isinstance(pred_depth, torch.Tensor):
+        pred_depth = pred_depth.detach().cpu().numpy()
+    if isinstance(gt_depth, torch.Tensor):
+        gt_depth = gt_depth.detach().cpu().numpy()
+    if mask is not None and isinstance(mask, torch.Tensor):
+        mask = mask.detach().cpu().numpy()
+    
+    # Ensure same shape
+    if pred_depth.shape != gt_depth.shape:
+        raise ValueError(f"Shape mismatch: pred_depth {pred_depth.shape}, gt_depth {gt_depth.shape}")
+    
+    # Apply mask if provided, otherwise create mask for valid depth values
+    if mask is None:
+        mask = (gt_depth > 0) & np.isfinite(gt_depth) & np.isfinite(pred_depth)
+    
+    # Skip computation if no valid pixels
+    if not np.any(mask):
+        return {
+            'rmse': float('nan'),
+            'mae': float('nan'),
+            'rel': float('nan'),
+            'a1': float('nan'),
+            'a2': float('nan'),
+            'a3': float('nan')
+        }
+    
+    # Get valid depth values
+    pred_depth = pred_depth[mask]
+    gt_depth = gt_depth[mask]
+    
+    # Scale invariant for monocular depth
+    # We align the scale of predicted depth to ground truth
+    if pred_depth.size > 0:
+        scale = np.median(gt_depth) / np.median(pred_depth)
+        pred_depth *= scale
+    
+    # Compute metrics
+    thresh = np.maximum((gt_depth / pred_depth), (pred_depth / gt_depth))
+    a1 = (thresh < 1.25).mean()
+    a2 = (thresh < 1.25 ** 2).mean()
+    a3 = (thresh < 1.25 ** 3).mean()
+    
+    abs_rel = np.mean(np.abs(gt_depth - pred_depth) / gt_depth)
+    rmse = np.sqrt(np.mean((gt_depth - pred_depth) ** 2))
+    mae = np.mean(np.abs(gt_depth - pred_depth))
+    
+    return {
+        'rmse': float(rmse),
+        'mae': float(mae),
+        'rel': float(abs_rel),
+        'a1': float(a1),
+        'a2': float(a2),
+        'a3': float(a3)
+    } 

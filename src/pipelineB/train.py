@@ -20,6 +20,7 @@ from src.pipelineB.config import load_config, save_config
 from src.utils.metrics import compute_metrics_from_logits, compute_classification_metrics
 from src.utils.logging import TrainingLogger
 from src.utils.visualization import visualize_classification_results, plot_confusion_matrix
+from src.utils.depth_losses import DepthEstimationLoss
 
 def set_seed(seed):
     """
@@ -44,7 +45,7 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, logger, e
     Args:
         model (torch.nn.Module): Model to train
         train_loader (torch.utils.data.DataLoader): Training data loader
-        criterion (torch.nn.Module): Loss function
+        criterion (torch.nn.Module): Classification loss function
         optimizer (torch.optim.Optimizer): Optimizer
         device (torch.device): Device to use for training
         logger (TrainingLogger): Logger
@@ -59,6 +60,20 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, logger, e
     all_preds = []
     all_targets = []
     
+    # Initialize depth loss if depth estimator is not frozen
+    depth_loss_fn = None
+    depth_loss_weight = 0.0
+    
+    if not model.freeze_depth_estimator:
+        depth_loss_weight = config['training'].get('depth_loss_weight', 0.0)
+        if depth_loss_weight > 0:
+            si_weight = config['training'].get('si_weight', 1.0)
+            edge_weight = config['training'].get('edge_weight', 0.1)
+            depth_loss_fn = DepthEstimationLoss(
+                si_weight=si_weight,
+                edge_weight=edge_weight
+            )
+    
     # Enable gradient computation
     with torch.set_grad_enabled(True):
         for batch_idx, data in enumerate(tqdm(train_loader, desc=f"Epoch {epoch}")):
@@ -66,12 +81,35 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, logger, e
             inputs = data['rgb_image'].to(device)
             targets = data['label'].to(device)
             
+            # Get ground truth depth if available and depth loss is enabled
+            gt_depth = None
+            if depth_loss_weight > 0 and 'gt_depth' in data and data['gt_depth'] is not None:
+                gt_depth = data['gt_depth'].to(device)
+            
             # Zero the parameter gradients
             optimizer.zero_grad()
             
-            # Forward pass
-            outputs = model(inputs)
-            loss = criterion(outputs, targets)
+            # Forward pass - get depth maps only if needed for depth loss
+            if gt_depth is not None and depth_loss_fn is not None:
+                outputs, pred_depth = model(inputs, return_depth=True)
+                
+                # Compute classification loss
+                cls_loss = criterion(outputs, targets)
+                
+                # Compute depth loss
+                depth_loss, depth_loss_dict = depth_loss_fn(pred_depth, gt_depth)
+                
+                # Combine losses
+                loss = cls_loss + depth_loss_weight * depth_loss
+                
+                # Log depth loss components
+                if batch_idx % config['logging']['log_interval'] == 0:
+                    logger.logger.info(f"Batch {batch_idx}: Depth SI Loss: {depth_loss_dict['si_loss']:.4f}, "
+                                     f"Edge Loss: {depth_loss_dict['edge_loss']:.4f}")
+            else:
+                # Just get classification outputs if no depth loss
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
             
             # Backward pass and optimize
             loss.backward()
@@ -96,35 +134,31 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, logger, e
                     task='classification'
                 )
                 
-                # Log batch
-                logger.log_batch(
-                    epoch=epoch,
-                    batch_idx=batch_idx,
-                    batch_size=inputs.size(0),
-                    data_size=len(train_loader.dataset),
-                    loss=loss.item(),
-                    lr=optimizer.param_groups[0]['lr'],
-                    metrics=batch_metrics,
-                    prefix='Train'
-                )
+                # Log to tensorboard
+                if logger.use_tensorboard:
+                    # Log loss
+                    logger.writer.add_scalar(
+                        'Batch/Loss',
+                        loss.item(),
+                        epoch * len(train_loader) + batch_idx
+                    )
+                    
+                    # Log metrics
+                    for metric_name, metric_value in batch_metrics.items():
+                        logger.writer.add_scalar(
+                            f'Batch/{metric_name}',
+                            metric_value,
+                            epoch * len(train_loader) + batch_idx
+                        )
     
     # Compute average loss
     epoch_loss /= len(train_loader)
     
-    # Compute metrics for the entire epoch
-    if all_preds and all_targets:
-        all_preds_np = np.array(all_preds)
-        all_targets_np = np.array(all_targets)
-        epoch_metrics = compute_classification_metrics(all_targets_np, all_preds_np)
-    else:
-        # If no predictions were made (all batches failed), return empty metrics
-        epoch_metrics = {
-            'accuracy': 0.0,
-            'precision': 0.0,
-            'recall': 0.0,
-            'f1_score': 0.0,
-            'specificity': 0.0
-        }
+    # Compute epoch metrics
+    epoch_metrics = compute_classification_metrics(
+        np.array(all_targets),
+        np.array(all_preds)
+    )
     
     return epoch_loss, epoch_metrics
 
@@ -141,12 +175,23 @@ def validate(model, dataloader, criterion, device, epoch, logger):
         logger (TrainingLogger): Logger
     
     Returns:
-        tuple: (val_loss, val_metrics)
+        tuple: (val_loss, val_metrics, depth_metrics)
     """
     model.eval()
     val_loss = 0.0
     all_preds = []
     all_targets = []
+    
+    # For depth evaluation
+    depth_errors = {
+        'rmse': [],
+        'mae': [],
+        'rel': [],
+        'a1': [],
+        'a2': [],
+        'a3': []
+    }
+    valid_depth_samples = 0
     
     with torch.no_grad():
         for batch_idx, data in enumerate(dataloader):
@@ -154,8 +199,13 @@ def validate(model, dataloader, criterion, device, epoch, logger):
             inputs = data['rgb_image'].to(device)
             targets = data['label'].to(device)
             
-            # Forward pass
-            outputs = model(inputs)
+            # Get ground truth depth if available
+            gt_depth = data.get('gt_depth')
+            if gt_depth is not None:
+                gt_depth = gt_depth.to(device)
+            
+            # Forward pass with depth map retrieval
+            outputs, pred_depth = model(inputs, return_depth=True)
             loss = criterion(outputs, targets)
             
             # Update metrics
@@ -167,20 +217,58 @@ def validate(model, dataloader, criterion, device, epoch, logger):
             # Store predictions and targets for metrics computation
             all_preds.extend(preds.cpu().numpy())
             all_targets.extend(targets.cpu().numpy())
+            
+            # Evaluate depth estimation if ground truth is available
+            if gt_depth is not None:
+                for i in range(len(inputs)):
+                    sample_gt_depth = gt_depth[i]
+                    sample_pred_depth = pred_depth[i]
+                    
+                    # Skip samples with no valid depth
+                    if torch.sum(sample_gt_depth > 0) < 100:  # Require at least 100 valid pixels
+                        continue
+                    
+                    # Compute depth metrics
+                    from src.utils.metrics import compute_depth_metrics
+                    metrics = compute_depth_metrics(sample_pred_depth, sample_gt_depth)
+                    
+                    # Skip samples with invalid metrics
+                    if any(np.isnan(list(metrics.values()))):
+                        continue
+                    
+                    # Accumulate metrics
+                    for k, v in metrics.items():
+                        depth_errors[k].append(v)
+                    
+                    valid_depth_samples += 1
     
     # Compute average loss
     val_loss /= len(dataloader)
     
-    # Compute metrics
+    # Compute classification metrics
     val_metrics = compute_classification_metrics(
         np.array(all_targets),
         np.array(all_preds)
     )
     
+    # Compute average depth metrics
+    depth_metrics = {}
+    if valid_depth_samples > 0:
+        for k, v in depth_errors.items():
+            if v:  # Check if list is not empty
+                depth_metrics[k] = float(np.mean(v))
+            else:
+                depth_metrics[k] = float('nan')
+    
     # Log metrics to tensorboard
     if logger.use_tensorboard:
         for metric_name, metric_value in val_metrics.items():
             logger.writer.add_scalar(f'Val/{metric_name}', metric_value, epoch)
+        
+        # Log depth metrics
+        for metric_name, metric_value in depth_metrics.items():
+            if not np.isnan(metric_value):
+                logger.writer.add_scalar(f'Val/Depth_{metric_name}', metric_value, epoch)
     
     # Create a confusion matrix
     cm = confusion_matrix(all_targets, all_preds)
@@ -195,72 +283,77 @@ def validate(model, dataloader, criterion, device, epoch, logger):
     logger.logger.info(f"  Specificity: {val_metrics['specificity']:.4f}")
     logger.logger.info(f"  Confusion Matrix:\n{cm}")
     
-    return val_loss, val_metrics
+    # Log depth metrics if available
+    if depth_metrics:
+        logger.logger.info(f"Depth Estimation Metrics (Epoch {epoch}):")
+        logger.logger.info(f"  Valid Samples: {valid_depth_samples}")
+        logger.logger.info(f"  RMSE:  {depth_metrics.get('rmse', float('nan')):.4f} meters")
+        logger.logger.info(f"  MAE:   {depth_metrics.get('mae', float('nan')):.4f} meters")
+        logger.logger.info(f"  REL:   {depth_metrics.get('rel', float('nan')):.4f}")
+        logger.logger.info(f"  δ1:    {depth_metrics.get('a1', float('nan')):.4f} (% under 1.25)")
+        logger.logger.info(f"  δ2:    {depth_metrics.get('a2', float('nan')):.4f} (% under 1.25²)")
+        logger.logger.info(f"  δ3:    {depth_metrics.get('a3', float('nan')):.4f} (% under 1.25³)")
+    
+    return val_loss, val_metrics, depth_metrics
 
 def main(config_file):
     """
     Main function for training Pipeline B.
     
     Args:
-        config_file (str): Path to the YAML configuration file
+        config_file (str): Path to configuration file
     """
     # Load configuration
     config = load_config(config_file)
     
-    # Set random seed for reproducibility
+    # Set random seed
     set_seed(42)
+    
+    # Get current time for experiment naming
+    current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Set up logger
+    experiment_name = f"{config['logging']['experiment_name']}_{current_time}"
+    log_dir = os.path.join(config['logging']['log_dir'], experiment_name)
+    os.makedirs(log_dir, exist_ok=True)
+    
+    logger = TrainingLogger(
+        log_dir=log_dir,
+        experiment_name=experiment_name,
+        use_tensorboard=config['logging']['use_tensorboard']
+    )
+    
+    # Save configuration
+    config_save_path = os.path.join(log_dir, 'config.json')
+    save_config(config, config_save_path)
+    
+    # Create checkpoint directory
+    checkpoint_dir = os.path.join(
+        config['logging']['checkpoint_dir'],
+        experiment_name
+    )
+    os.makedirs(checkpoint_dir, exist_ok=True)
     
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    # Create timestamp for experiment
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    experiment_name = f"{config['logging']['experiment_name']}_{timestamp}"
-    
-    # Create directories with timestamp
-    experiment_dir = os.path.join(config['logging']['log_dir'], experiment_name)
-    checkpoint_dir = os.path.join(config['logging']['checkpoint_dir'], experiment_name)
-    
-    os.makedirs(experiment_dir, exist_ok=True)
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    
-    # Create fixed tensorboard directory
-    tensorboard_dir = os.path.join('results/pipelineB/tb_logs')
-    os.makedirs(tensorboard_dir, exist_ok=True)
-    
-    # Update config with experiment name
-    config['logging']['experiment_dir'] = experiment_dir
-    config['logging']['timestamp'] = timestamp
-    
-    # Save the config
-    save_config(config, os.path.join(experiment_dir, 'config.json'))
-    
-    # Initialize logger
-    logger = TrainingLogger(
-        log_dir=experiment_dir,
-        experiment_name=experiment_name,
-        use_tensorboard=config['logging']['use_tensorboard'],
-        tensorboard_dir=tensorboard_dir
-    )
-    
-    # Log start of training
-    logger.logger.info(f"Starting training experiment: {experiment_name}")
     logger.logger.info(f"Using device: {device}")
     
-    # Log hyperparameters
-    logger.log_hyperparameters(config)
-    
     # Get dataloaders
-    train_loader, val_loader, test_loader = get_dataloaders(config_file)
-    logger.logger.info(f"Dataset loaded: {len(train_loader.dataset)} training, "
-                  f"{len(val_loader.dataset)} validation, {len(test_loader.dataset)} test samples")
+    train_loader, val_loader, _ = get_dataloaders(config_file)
+    logger.logger.info(f"Train dataset loaded with {len(train_loader.dataset)} samples")
+    logger.logger.info(f"Validation dataset loaded with {len(val_loader.dataset)} samples")
     
     # Get model
     model = get_model(config)
-    model = model.to(device)
     
-    # Log model summary (skip input size for complex model with depth estimation)
-    logger.log_model_summary(model)
+    # Log depth estimator training status
+    freeze_depth = config['model'].get('freeze_depth_estimator', True)
+    depth_loss_weight = config['training'].get('depth_loss_weight', 0.0)
+    logger.logger.info(f"Depth estimator frozen: {freeze_depth}")
+    logger.logger.info(f"Depth loss weight: {depth_loss_weight}")
+    
+    # Move model to device
+    model = model.to(device)
     
     # Define loss function, optimizer and scheduler
     criterion = nn.CrossEntropyLoss()
@@ -299,7 +392,7 @@ def main(config_file):
         )
         
         # Validate
-        val_loss, val_metrics = validate(
+        val_loss, val_metrics, depth_metrics = validate(
             model=model,
             dataloader=val_loader,
             criterion=criterion,
@@ -337,10 +430,13 @@ def main(config_file):
             'val_loss': val_loss,
             'train_metrics': train_metrics,
             'val_metrics': val_metrics,
+            'depth_metrics': depth_metrics,
             'config': config
         }, latest_checkpoint_path)
         
-        # Check for best model by validation loss
+        # Check for best model by validation loss and F1 score
+        improved = False
+
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             # Save best model by loss
@@ -354,16 +450,12 @@ def main(config_file):
                 'val_loss': val_loss,
                 'train_metrics': train_metrics,
                 'val_metrics': val_metrics,
+                'depth_metrics': depth_metrics,
                 'config': config
             }, best_loss_checkpoint_path)
             logger.logger.info(f"New best model (loss) saved at epoch {epoch}")
-            
-            # Reset early stopping counter
-            early_stopping_counter = 0
-        else:
-            early_stopping_counter += 1
-        
-        # Check for best model by F1 score
+            improved = True
+
         if val_metrics['f1_score'] > best_val_f1:
             best_val_f1 = val_metrics['f1_score']
             # Save best model by F1 score
@@ -377,13 +469,21 @@ def main(config_file):
                 'val_loss': val_loss,
                 'train_metrics': train_metrics,
                 'val_metrics': val_metrics,
+                'depth_metrics': depth_metrics,
                 'config': config
             }, best_f1_checkpoint_path)
             logger.logger.info(f"New best model (F1 score) saved at epoch {epoch}")
-        
+            improved = True
+
+        # Update early stopping counter only if neither metric improved
+        if improved:
+            early_stopping_counter = 0
+        else:
+            early_stopping_counter += 1
+
         # Early stopping
         if early_stopping_counter >= patience:
-            logger.logger.info(f"Early stopping triggered after {patience} epochs without improvement")
+            logger.logger.info(f"Early stopping triggered after {patience} epochs without improvement in both loss and F1 score")
             break
     
     # Close logger
