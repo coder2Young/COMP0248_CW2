@@ -4,251 +4,205 @@ import torch
 import pandas as pd
 import cv2
 from torch.utils.data import Dataset
-from PIL import Image
-import open3d as o3d
+import glob
 
 class RealSenseDataset(Dataset):
     """
-    Dataset for RealSense RGB-D images with table/no table classification.
+    Dataset for RealSense depth camera data.
     """
-    def __init__(self, data_root='data/RealSense', transform=None, point_transform=None, image_size=384):
+    def __init__(self, data_root="data/RealSense", num_points=1024, use_height=False, use_rgb=True, transform=None):
         """
-        Initialize the dataset.
+        Initialize the RealSense dataset.
         
         Args:
-            data_root (str): Root directory of the dataset
-            transform (callable, optional): Transform for RGB images
-            point_transform (callable, optional): Transform for point clouds
-            image_size (int): Image size for resizing
+            data_root (str): Root directory containing the RealSense data
+            num_points (int): Number of points in the point cloud
+            use_height (bool): Whether to use height as an additional feature
+            use_rgb (bool): Whether to use RGB as additional features
+            transform (callable, optional): Transform to apply to the data
         """
         self.data_root = data_root
+        self.num_points = num_points
+        self.use_height = use_height
+        self.use_rgb = use_rgb
         self.transform = transform
-        self.point_transform = point_transform
-        self.image_size = image_size
         
-        # Read label CSV file
-        label_file = os.path.join(data_root, 'label.csv')
-        self.labels_df = pd.read_csv(label_file)
+        # Define directory paths
+        self.depth_dir = os.path.join(data_root, "depthTSDF")
+        self.rgb_dir = os.path.join(data_root, "image")
+        self.label_csv = os.path.join(data_root, "label.csv")
         
-        # Get file list
-        self.file_list = self.labels_df['File name'].tolist()
+        # Check if directories and label file exist
+        if not os.path.exists(self.depth_dir):
+            print(f"Warning: Depth directory not found: {self.depth_dir}")
         
-        # Intrinsic parameters for Intel RealSense depth camera
-        # These are default values - ideally should be loaded from calibration file
-        self.fx = 616.4  # focal length x
-        self.fy = 616.7  # focal length y
-        self.cx = 317.6  # principal point x
-        self.cy = 242.5  # principal point y
+        if not os.path.exists(self.rgb_dir) and self.use_rgb:
+            print(f"Warning: RGB directory not found: {self.rgb_dir}")
         
-        # Verify files exist
-        self._verify_files()
-    
-    def _verify_files(self):
-        """Verify all files exist in both image and depth directories."""
-        verified_files = []
+        if not os.path.exists(self.label_csv):
+            print(f"Warning: Label file not found: {self.label_csv}")
+            self.labels = {}
+        else:
+            # Load labels from CSV
+            self.label_df = pd.read_csv(self.label_csv)
+            # Convert to dictionary for easy lookup
+            self.labels = dict(zip(self.label_df['filename'], self.label_df['label']))
         
-        for filename in self.file_list:
-            rgb_path = os.path.join(self.data_root, 'image', filename)
-            depth_path = os.path.join(self.data_root, 'depthTSDF', filename)
+        # Find all depth images
+        self.depth_files = sorted(glob.glob(os.path.join(self.depth_dir, "*.png")))
+        
+        # Filter files to only include those with labels
+        valid_files = []
+        for depth_file in self.depth_files:
+            filename = os.path.basename(depth_file)
             
-            if os.path.exists(rgb_path) and os.path.exists(depth_path):
-                verified_files.append(filename)
-            else:
-                print(f"Warning: Missing files for {filename}")
+            # Check if there is a label for this file
+            if filename in self.labels:
+                # If using RGB, also check that RGB file exists
+                if self.use_rgb:
+                    rgb_file = os.path.join(self.rgb_dir, filename)
+                    if os.path.exists(rgb_file):
+                        valid_files.append(depth_file)
+                else:
+                    valid_files.append(depth_file)
         
-        # Update file list to only include verified files
-        self.file_list = verified_files
+        self.depth_files = valid_files
+        print(f"Found {len(self.depth_files)} RealSense samples")
+        
+        # Camera intrinsics for RealSense
+        self.intrinsics = {
+            'fx': 612.7910766601562,
+            'fy': 611.8779296875,
+            'cx': 321.7364196777344,
+            'cy': 245.0658416748047
+        }
     
     def __len__(self):
-        """Return the number of samples in the dataset."""
-        return len(self.file_list)
-    
-    def _load_rgb(self, idx):
-        """Load RGB image."""
-        filename = self.file_list[idx]
-        rgb_path = os.path.join(self.data_root, 'image', filename)
-        
-        # Load image and convert to RGB
-        rgb_image = cv2.imread(rgb_path)
-        rgb_image = cv2.cvtColor(rgb_image, cv2.COLOR_BGR2RGB)
-        
-        # Resize if needed
-        if self.image_size:
-            rgb_image = cv2.resize(rgb_image, (self.image_size, self.image_size))
-        
-        return rgb_image
-    
-    def _load_depth(self, idx):
-        """Load depth image."""
-        filename = self.file_list[idx]
-        depth_path = os.path.join(self.data_root, 'depthTSDF', filename)
-        
-        # Load depth image
-        depth_image = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
-        
-        # Convert to meters if needed (depends on how depth is stored)
-        # Assuming depth is stored in millimeters
-        depth_image = depth_image.astype(np.float32) / 1000.0
-        
-        # Resize if needed
-        if self.image_size:
-            depth_image = cv2.resize(depth_image, (self.image_size, self.image_size))
-        
-        return depth_image
-    
-    def _create_point_cloud(self, rgb_image, depth_image):
-        """
-        Create point cloud from RGB and depth images.
-        
-        Args:
-            rgb_image (numpy.ndarray): RGB image of shape (H, W, 3)
-            depth_image (numpy.ndarray): Depth image of shape (H, W)
-            
-        Returns:
-            numpy.ndarray: Point cloud of shape (N, 6) with XYZ coordinates and RGB values
-        """
-        # Get image dimensions
-        height, width = depth_image.shape
-        
-        # Create coordinate grid
-        x = np.arange(width)
-        y = np.arange(height)
-        xx, yy = np.meshgrid(x, y)
-        
-        # Compute 3D coordinates
-        z = depth_image
-        x = (xx - self.cx) * z / self.fx
-        y = (yy - self.cy) * z / self.fy
-        
-        # Reshape to point cloud format
-        x = x.reshape(-1)
-        y = y.reshape(-1)
-        z = z.reshape(-1)
-        
-        # Get RGB values
-        r = rgb_image[:, :, 0].reshape(-1)
-        g = rgb_image[:, :, 1].reshape(-1)
-        b = rgb_image[:, :, 2].reshape(-1)
-        
-        # Filter out invalid points (zero depth)
-        valid_idx = z > 0
-        x = x[valid_idx]
-        y = y[valid_idx]
-        z = z[valid_idx]
-        r = r[valid_idx]
-        g = g[valid_idx]
-        b = b[valid_idx]
-        
-        # Combine into point cloud
-        points = np.column_stack([x, y, z, r, g, b])
-        
-        # Return the first 10000 points for compatibility (or sample if more)
-        if len(points) > 10000:
-            indices = np.random.choice(len(points), 10000, replace=False)
-            points = points[indices]
-        elif len(points) < 10000:
-            # Pad with zeros if not enough points
-            padding = np.zeros((10000 - len(points), 6))
-            points = np.vstack([points, padding])
-        
-        return points
-    
-    def get_label(self, idx):
-        """Get label for a sample."""
-        filename = self.file_list[idx]
-        # Find the corresponding row in the dataframe
-        label = self.labels_df.loc[self.labels_df['File name'] == filename, 'label'].values[0]
-        return int(label)
+        return len(self.depth_files)
     
     def __getitem__(self, idx):
-        """
-        Get a data sample.
+        # Get file paths
+        depth_file = self.depth_files[idx]
+        filename = os.path.basename(depth_file)
+        rgb_file = os.path.join(self.rgb_dir, filename) if self.use_rgb else None
         
-        Args:
-            idx (int): Index
+        # Load depth
+        depth_map = cv2.imread(depth_file, cv2.IMREAD_ANYDEPTH)
+        
+        # Convert to meters if needed
+        depth_map = depth_map.astype(np.float32)
+        if depth_map.max() > 1000:  # If values are in millimeters
+            depth_map /= 1000.0  # Convert to meters
+        
+        # Apply simple noise filtering
+        depth_map = cv2.medianBlur(depth_map, 5)
+        
+        # Load RGB if needed
+        if self.use_rgb:
+            rgb_image = cv2.imread(rgb_file)
+            rgb_image = cv2.cvtColor(rgb_image, cv2.COLOR_BGR2RGB)
+        
+        # Generate point cloud
+        xyz_points = []
+        rgb_values = []
+        
+        height, width = depth_map.shape
+        fx, fy = self.intrinsics['fx'], self.intrinsics['fy']
+        cx, cy = self.intrinsics['cx'], self.intrinsics['cy']
+        
+        for v in range(0, height, 1):
+            for u in range(0, width, 1):
+                z = depth_map[v, u]
+                if z > 0:
+                    x = (u - cx) * z / fx
+                    y = (v - cy) * z / fy
+                    xyz_points.append([x, y, z])
+                    
+                    # Add RGB values if needed
+                    if self.use_rgb:
+                        # Normalize RGB values to [0, 1]
+                        rgb = rgb_image[v, u] / 255.0
+                        rgb_values.append(rgb)
+        
+        if not xyz_points:
+            print(f"Warning: No valid depth values found in {depth_file}, returning zero point cloud")
+            point_cloud = np.zeros((self.num_points, 6 if self.use_rgb else 3), dtype=np.float32)
+        else:
+            xyz_points = np.array(xyz_points, dtype=np.float32)
             
-        Returns:
-            dict: Sample dictionary with RGB image, depth map, point cloud, and label
-        """
-        # Load RGB and depth images
-        rgb_image = self._load_rgb(idx)
-        depth_image = self._load_depth(idx)
+            if self.use_rgb:
+                rgb_values = np.array(rgb_values, dtype=np.float32)
+                point_cloud = np.column_stack((xyz_points, rgb_values))
+            else:
+                point_cloud = xyz_points
+            
+            # Subsample or pad to num_points
+            if len(point_cloud) > self.num_points:
+                indices = np.random.choice(len(point_cloud), self.num_points, replace=False)
+                point_cloud = point_cloud[indices]
+            elif len(point_cloud) < self.num_points:
+                padding = np.zeros((self.num_points - len(point_cloud), 
+                                     point_cloud.shape[1]), dtype=np.float32)
+                point_cloud = np.vstack([point_cloud, padding])
         
-        # Get label
-        label = self.get_label(idx)
+        # Add height feature if needed
+        if self.use_height:
+            # Extract XYZ coordinates
+            xyz = point_cloud[:, :3]
+            
+            # Calculate height feature (distance from the lowest point in Y)
+            floor_height = np.min(xyz[:, 1])
+            heights = xyz[:, 1] - floor_height
+            
+            if self.use_rgb:
+                # For 6-channel point cloud: insert height before RGB
+                rgb = point_cloud[:, 3:]
+                point_cloud = np.column_stack((xyz, heights, rgb))
+            else:
+                # For 3-channel point cloud: append height
+                point_cloud = np.column_stack((xyz, heights))
         
-        # Create point cloud for PipelineA
-        point_cloud = self._create_point_cloud(rgb_image, depth_image)
+        # Get label for this file
+        label = int(self.labels[filename])
         
-        # Convert to tensors
-        rgb_tensor = torch.from_numpy(rgb_image.transpose(2, 0, 1).astype(np.float32) / 255.0)
-        depth_tensor = torch.from_numpy(depth_image.astype(np.float32))
-        point_cloud_tensor = torch.from_numpy(point_cloud.astype(np.float32))
-        label_tensor = torch.tensor(label, dtype=torch.long)
-        
-        # Apply transforms if provided
-        if self.transform is not None:
-            rgb_tensor = self.transform(rgb_tensor)
-        
-        if self.point_transform is not None:
-            point_cloud_tensor = self.point_transform(point_cloud_tensor)
-        
-        # Create sample dictionary
+        # Create sample
         sample = {
-            'rgb_image': rgb_tensor,
-            'depth_map': depth_tensor,
-            'point_cloud': point_cloud_tensor,
-            'label': label_tensor,
-            'file_path': self.file_list[idx],
-            'dataset': 'realsense'  # Marker to identify the dataset source
+            'point_cloud': torch.from_numpy(point_cloud.astype(np.float32)),
+            'label': torch.tensor(label, dtype=torch.long)
         }
+        
+        # Apply transform if provided
+        if self.transform:
+            sample = self.transform(sample)
         
         return sample
 
-def get_realsense_dataloader(config, pipeline='pipelineB'):
+def get_realsense_dataloader(config, pipeline='pipelineA'):
     """
-    Get dataloader for RealSense dataset.
+    Get dataloader for RealSense data.
     
     Args:
         config (dict): Configuration dictionary
         pipeline (str): Pipeline name ('pipelineA' or 'pipelineB')
-        
+    
     Returns:
-        torch.utils.data.DataLoader: Test dataloader
+        torch.utils.data.DataLoader: DataLoader for RealSense data
     """
-    import torch.utils.data as data
-    from torchvision import transforms
-    
-    # Set up appropriate transforms based on pipeline
-    if pipeline == 'pipelineA':
-        # For point cloud classification
-        transform = None
-        point_transform = None  # Define point transform if needed
-    else:
-        # For RGB-based classification (PipelineB)
-        transform = transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
-        )
-        point_transform = None
-    
-    # Get image size from config
-    image_size = config['data'].get('image_size', 384)
-    
-    # Create dataset
+    # Create the dataset with the correct data root
     dataset = RealSenseDataset(
-        data_root=config.get('realsense_data_root', 'data/RealSense'),
-        transform=transform,
-        point_transform=point_transform,
-        image_size=image_size
+        data_root="data/RealSense",  # 使用正确的数据路径
+        num_points=config['data']['num_points'],
+        use_height=config['data'].get('use_height', False),
+        use_rgb=config['data'].get('use_rgb', False),  # 使用配置中的设置
+        transform=None  # No transform for evaluation
     )
     
-    # Create dataloader
-    dataloader = data.DataLoader(
+    # Create the dataloader
+    dataloader = torch.utils.data.DataLoader(
         dataset,
-        batch_size=config['data'].get('batch_size', 32),
+        batch_size=config['data']['batch_size'],
         shuffle=False,
-        num_workers=config['data'].get('num_workers', 4),
+        num_workers=config['data']['num_workers'],
         pin_memory=True
     )
     
