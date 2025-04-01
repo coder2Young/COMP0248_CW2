@@ -3,9 +3,6 @@ import sys
 import json
 import time
 import datetime
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -16,6 +13,7 @@ import random
 from tqdm import tqdm
 from sklearn.metrics import confusion_matrix
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 from src.pipelineB.model import get_model
 from src.pipelineB.dataset import get_dataloaders
 from src.pipelineB.config import load_config, save_config
