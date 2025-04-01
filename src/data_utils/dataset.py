@@ -255,7 +255,7 @@ class TablePointCloudDataset(Sun3DBaseDataset):
     Sun3D dataset for point cloud classification and segmentation.
     """
     def __init__(self, data_root, sequences, split='train', mode='classification', 
-                 num_points=1024, transform=None, use_height=False, use_rgb=True):
+                 num_points=1024, transform=None, use_rgb=True):
         """
         Initialize the point cloud dataset.
         
@@ -266,13 +266,11 @@ class TablePointCloudDataset(Sun3DBaseDataset):
             mode (str): 'classification' or 'segmentation'
             num_points (int): Number of points in the point cloud
             transform (callable, optional): Transform to apply to the data
-            use_height (bool): Whether to use height as an additional feature
             use_rgb (bool): Whether to use RGB as additional features
         """
         super().__init__(data_root, sequences, split, transform)
         self.mode = mode
         self.num_points = num_points
-        self.use_height = use_height
         self.use_rgb = use_rgb
     
     def __getitem__(self, idx):
@@ -359,27 +357,6 @@ class TablePointCloudDataset(Sun3DBaseDataset):
             
             pc_sample['point_cloud'] = sample['point_cloud']
             pc_sample['labels'] = point_labels
-        
-        # Handle height feature
-        if self.use_height:
-            current_pc = pc_sample['point_cloud']
-            
-            # Extract XYZ coordinates regardless of how many channels we have
-            xyz = current_pc[:, :3]
-            
-            # Calculate height
-            floor_height = np.min(xyz[:, 1])
-            heights = xyz[:, 1] - floor_height
-            
-            if current_pc.shape[1] > 3:  # If we have RGB channels
-                rgb = current_pc[:, 3:]
-                # Insert height before RGB: [X, Y, Z, height, R, G, B]
-                current_pc = np.column_stack((xyz, heights, rgb))
-            else:
-                # Append height: [X, Y, Z, height]
-                current_pc = np.column_stack((xyz, heights))
-                
-            pc_sample['point_cloud'] = current_pc.astype(np.float32)
         
         # Convert to PyTorch tensors
         for key in pc_sample:

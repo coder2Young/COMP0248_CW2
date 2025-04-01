@@ -261,7 +261,7 @@ def main(config_file):
     model = model.to(device)
     
     # Log model summary
-    logger.log_model_summary(model, input_size=(1, config['data']['num_points'], 4 if config['data']['use_height'] else 3))
+    logger.log_model_summary(model, input_size=(1, config['data']['num_points'], 3))
     
     # Define loss function, optimizer and scheduler
     criterion = nn.CrossEntropyLoss()

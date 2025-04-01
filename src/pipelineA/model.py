@@ -185,9 +185,7 @@ def get_model(config):
     """
     # Calculate input dimension based on features used
     input_dim = 3  # XYZ coordinates are always used
-    if config['data'].get('use_height', False):
-        input_dim += 1  # Add height channel
-    if config['data'].get('use_rgb', True):  # Default to True
+    if config['data'].get('use_rgb', False):
         input_dim += 3  # Add RGB channels
     
     # Create model

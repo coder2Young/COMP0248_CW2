@@ -10,20 +10,18 @@ class RealSenseDataset(Dataset):
     """
     Dataset for RealSense depth camera data.
     """
-    def __init__(self, data_root="data/RealSense", num_points=1024, use_height=False, use_rgb=True, transform=None):
+    def __init__(self, data_root="data/RealSense", num_points=1024, use_rgb=True, transform=None):
         """
         Initialize the RealSense dataset.
         
         Args:
             data_root (str): Root directory containing the RealSense data
             num_points (int): Number of points in the point cloud
-            use_height (bool): Whether to use height as an additional feature
             use_rgb (bool): Whether to use RGB as additional features
             transform (callable, optional): Transform to apply to the data
         """
         self.data_root = data_root
         self.num_points = num_points
-        self.use_height = use_height
         self.use_rgb = use_rgb
         self.transform = transform
         
@@ -145,23 +143,6 @@ class RealSenseDataset(Dataset):
                                      point_cloud.shape[1]), dtype=np.float32)
                 point_cloud = np.vstack([point_cloud, padding])
         
-        # Add height feature if needed
-        if self.use_height:
-            # Extract XYZ coordinates
-            xyz = point_cloud[:, :3]
-            
-            # Calculate height feature (distance from the lowest point in Y)
-            floor_height = np.min(xyz[:, 1])
-            heights = xyz[:, 1] - floor_height
-            
-            if self.use_rgb:
-                # For 6-channel point cloud: insert height before RGB
-                rgb = point_cloud[:, 3:]
-                point_cloud = np.column_stack((xyz, heights, rgb))
-            else:
-                # For 3-channel point cloud: append height
-                point_cloud = np.column_stack((xyz, heights))
-        
         # Get label for this file
         label = int(self.labels[filename])
         
@@ -192,7 +173,6 @@ def get_realsense_dataloader(config, pipeline='pipelineA'):
     dataset = RealSenseDataset(
         data_root="data/RealSense",  # 使用正确的数据路径
         num_points=config['data']['num_points'],
-        use_height=config['data'].get('use_height', False),
         use_rgb=config['data'].get('use_rgb', False),  # 使用配置中的设置
         transform=None  # No transform for evaluation
     )
