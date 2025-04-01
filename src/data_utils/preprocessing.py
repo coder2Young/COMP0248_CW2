@@ -434,4 +434,75 @@ def point_cloud_to_depth(point_cloud, intrinsics, image_shape):
         if 0 <= u < width and 0 <= v < height:
             depth_map[v, u] = z
     
-    return depth_map 
+    return depth_map
+
+def depth_to_colored_point_cloud(depth_map, rgb_image, intrinsics, subsample=True, num_points=1024, min_depth=0.5, max_depth=10.0):
+    """
+    Convert depth map to colored point cloud using camera intrinsics and RGB image.
+    
+    Args:
+        depth_map (numpy.ndarray): Input depth map
+        rgb_image (numpy.ndarray): RGB image of shape (H, W, 3)
+        intrinsics (dict): Camera intrinsics including fx, fy, cx, cy
+        subsample (bool): Whether to subsample the point cloud
+        num_points (int): Number of points to sample if subsample is True
+        min_depth (float): Minimum valid depth value
+        max_depth (float): Maximum valid depth value
+    
+    Returns:
+        numpy.ndarray: Colored point cloud of shape (N, 6) where N is num_points if subsample is True
+                      or the number of valid depth pixels otherwise. The 6 channels are XYZ coordinates
+                      and RGB values normalized to [0, 1].
+    """
+    # First, generate XYZ point cloud using the existing function
+    xyz_point_cloud = depth_to_point_cloud(
+        depth_map, intrinsics, subsample=False, 
+        min_depth=min_depth, max_depth=max_depth
+    )
+    
+    # If no valid points were found, return zeros with RGB
+    if xyz_point_cloud.shape[0] == 0:
+        if subsample:
+            return np.zeros((num_points, 6), dtype=np.float32)
+        else:
+            return np.zeros((0, 6), dtype=np.float32)
+    
+    # Get the original height and width
+    height, width = depth_map.shape
+    
+    # Get camera intrinsics
+    fx = intrinsics['fx']
+    fy = intrinsics['fy']
+    cx = intrinsics['cx']
+    cy = intrinsics['cy']
+    
+    # Initialize RGB values
+    rgb_values = np.zeros((xyz_point_cloud.shape[0], 3), dtype=np.float32)
+    
+    # Project 3D points back to 2D image space to sample RGB
+    for i, (x, y, z) in enumerate(xyz_point_cloud):
+        if z <= 0:
+            continue
+            
+        # Project to image coordinates
+        u = int(x * fx / z + cx)
+        v = int(y * fy / z + cy)
+        
+        # Check if projected point is inside the image
+        if 0 <= u < width and 0 <= v < height:
+            # Sample RGB value and normalize to [0, 1]
+            rgb_values[i] = rgb_image[v, u] / 255.0
+    
+    # Combine XYZ and RGB to form 6-channel point cloud
+    colored_point_cloud = np.column_stack((xyz_point_cloud, rgb_values))
+    
+    # Subsample if requested
+    if subsample and colored_point_cloud.shape[0] > num_points:
+        indices = np.random.choice(colored_point_cloud.shape[0], num_points, replace=False)
+        colored_point_cloud = colored_point_cloud[indices]
+    elif subsample and colored_point_cloud.shape[0] < num_points:
+        # Pad with zeros if not enough points
+        padding = np.zeros((num_points - colored_point_cloud.shape[0], 6), dtype=np.float32)
+        colored_point_cloud = np.vstack([colored_point_cloud, padding])
+    
+    return colored_point_cloud.astype(np.float32) 

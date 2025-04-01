@@ -35,7 +35,8 @@ def get_dataloader(config, split='train', transform=None):
         mode='classification',
         num_points=config['data']['num_points'],
         transform=transform,
-        use_height=config['data']['use_height']
+        use_height=config['data']['use_height'],
+        use_rgb=config['data'].get('use_rgb', True)
     )
     
     # If split is 'train' or 'val', split the training data

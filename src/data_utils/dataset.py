@@ -11,7 +11,8 @@ from src.data_utils.preprocessing import (
     read_intrinsics,
     read_and_parse_polygon_labels,
     depth_to_point_cloud,
-    get_image_label_from_polygons
+    get_image_label_from_polygons,
+    depth_to_colored_point_cloud
 )
 
 class Sun3DBaseDataset(Dataset):
@@ -251,26 +252,28 @@ class Sun3DBaseDataset(Dataset):
 
 class TablePointCloudDataset(Sun3DBaseDataset):
     """
-    Dataset class for point cloud classification and segmentation tasks.
+    Sun3D dataset for point cloud classification and segmentation.
     """
     def __init__(self, data_root, sequences, split='train', mode='classification', 
-                 num_points=1024, transform=None, use_height=False):
+                 num_points=1024, transform=None, use_height=False, use_rgb=True):
         """
         Initialize the point cloud dataset.
         
         Args:
             data_root (str): Root directory of the dataset
-            sequences (list): List of sequences to include
-            split (str): 'train' or 'test'
+            sequences (list): List of sequences to use
+            split (str): 'train', 'val', or 'test' split
             mode (str): 'classification' or 'segmentation'
-            num_points (int): Number of points to sample from each point cloud
-            transform (callable, optional): Optional transform to be applied on a sample
+            num_points (int): Number of points in the point cloud
+            transform (callable, optional): Transform to apply to the data
             use_height (bool): Whether to use height as an additional feature
+            use_rgb (bool): Whether to use RGB as additional features
         """
         super().__init__(data_root, sequences, split, transform)
         self.mode = mode
         self.num_points = num_points
         self.use_height = use_height
+        self.use_rgb = use_rgb
     
     def __getitem__(self, idx):
         """
@@ -289,13 +292,22 @@ class TablePointCloudDataset(Sun3DBaseDataset):
         depth_map = sample['depth_map']
         intrinsics = sample['intrinsics']
         
-        # Convert depth map to point cloud
-        point_cloud = depth_to_point_cloud(
-            depth_map, 
-            intrinsics, 
-            subsample=True, 
-            num_points=self.num_points
-        )
+        # Generate point cloud with RGB
+        if self.use_rgb:
+            point_cloud = depth_to_colored_point_cloud(
+                depth_map, 
+                sample['rgb_image'],
+                intrinsics, 
+                subsample=True, 
+                num_points=self.num_points
+            )
+        else:
+            point_cloud = depth_to_point_cloud(
+                depth_map, 
+                intrinsics, 
+                subsample=True, 
+                num_points=self.num_points
+            )
         
         # Add point cloud to the sample
         sample['point_cloud'] = point_cloud.astype(np.float32)
@@ -348,25 +360,31 @@ class TablePointCloudDataset(Sun3DBaseDataset):
             pc_sample['point_cloud'] = sample['point_cloud']
             pc_sample['labels'] = point_labels
         
-        # If using height as an additional feature
+        # Handle height feature
         if self.use_height:
-            # Get the point cloud data from the pc_sample
             current_pc = pc_sample['point_cloud']
             
-            # Check if we already have 4 dimensions (XYZ + height)
-            if current_pc.shape[1] == 3:  # Only XYZ
-                # Calculate heights
-                floor_height = np.min(current_pc[:, 1])
-                heights = current_pc[:, 1] - floor_height
+            # Extract XYZ coordinates regardless of how many channels we have
+            xyz = current_pc[:, :3]
+            
+            # Calculate height
+            floor_height = np.min(xyz[:, 1])
+            heights = xyz[:, 1] - floor_height
+            
+            if current_pc.shape[1] > 3:  # If we have RGB channels
+                rgb = current_pc[:, 3:]
+                # Insert height before RGB: [X, Y, Z, height, R, G, B]
+                current_pc = np.column_stack((xyz, heights, rgb))
+            else:
+                # Append height: [X, Y, Z, height]
+                current_pc = np.column_stack((xyz, heights))
                 
-                # Stack height as an additional feature
-                current_pc = np.column_stack((current_pc, heights))
-                pc_sample['point_cloud'] = current_pc.astype(np.float32)
+            pc_sample['point_cloud'] = current_pc.astype(np.float32)
         
         # Convert to PyTorch tensors
         for key in pc_sample:
             if isinstance(pc_sample[key], np.ndarray):
-                pc_sample[key] = torch.from_numpy(pc_sample[key])
+                pc_sample[key] = torch.from_numpy(pc_sample[key].astype(np.float32))
         
         return pc_sample
 

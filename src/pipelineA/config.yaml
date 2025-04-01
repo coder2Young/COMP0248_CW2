@@ -4,7 +4,7 @@
 data:
   root: "data/CW2-Dataset/data"
   num_points: 1024
-  use_height: true
+  use_height: false
   num_workers: 4
   batch_size: 32
   train_val_split: 0.8  # 80% training, 20% validation

@@ -182,15 +182,13 @@ class DGCNN(nn.Module):
 def get_model(config):
     """
     Get a DGCNN model based on configuration.
-    
-    Args:
-        config (dict): Configuration dictionary
-    
-    Returns:
-        torch.nn.Module: DGCNN model
     """
-    # Determine input dimension based on whether we use height as an additional feature
-    input_dim = 4 if config['data']['use_height'] else 3
+    # Calculate input dimension based on features used
+    input_dim = 3  # XYZ coordinates are always used
+    if config['data'].get('use_height', False):
+        input_dim += 1  # Add height channel
+    if config['data'].get('use_rgb', True):  # Default to True
+        input_dim += 3  # Add RGB channels
     
     # Create model
     model = DGCNN(

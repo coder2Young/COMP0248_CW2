@@ -4,208 +4,104 @@ import torchvision.transforms as transforms
 import random
 import cv2
 
-class PointCloudRotation:
+class RandomRotation:
     """
-    Apply random rotation to point cloud.
+    Randomly rotate the point cloud around the Z axis.
     """
-    def __init__(self, axis=None, angle_range=(-np.pi/4, np.pi/4)):
-        """
-        Initialize the rotation transform.
-        
-        Args:
-            axis (int or None): Axis to rotate around (0, 1, 2 for x, y, z). If None, a random axis is chosen.
-            angle_range (tuple): Range of angles to sample from
-        """
-        self.axis = axis
+    def __init__(self, angle_range=(-180, 180)):
         self.angle_range = angle_range
     
     def __call__(self, point_cloud):
-        """
-        Apply rotation to point cloud.
-        
-        Args:
-            point_cloud (torch.Tensor or numpy.ndarray): Point cloud of shape (N, 3)
-        
-        Returns:
-            torch.Tensor or numpy.ndarray: Rotated point cloud
-        """
-        if isinstance(point_cloud, torch.Tensor):
-            original_type = 'torch'
-            device = point_cloud.device
-            point_cloud = point_cloud.cpu().numpy()
-        else:
-            original_type = 'numpy'
-        
-        # Get random rotation axis if not specified
-        if self.axis is None:
-            axis = random.randint(0, 2)
-        else:
-            axis = self.axis
-        
-        # Get random angle
-        angle = random.uniform(*self.angle_range)
+        angle = np.random.uniform(*self.angle_range) * np.pi / 180
         
         # Create rotation matrix
-        rotation_matrix = np.eye(3)
+        rotation_matrix = np.array([
+            [np.cos(angle), -np.sin(angle), 0],
+            [np.sin(angle), np.cos(angle), 0],
+            [0, 0, 1]
+        ])
         
-        c, s = np.cos(angle), np.sin(angle)
+        # Only rotate XYZ coordinates, preserve other channels
+        xyz = point_cloud[:, :3]
+        rotated_xyz = np.matmul(xyz, rotation_matrix.T)
         
-        if axis == 0:  # Rotate around x-axis
-            rotation_matrix[1, 1] = c
-            rotation_matrix[1, 2] = -s
-            rotation_matrix[2, 1] = s
-            rotation_matrix[2, 2] = c
-        elif axis == 1:  # Rotate around y-axis
-            rotation_matrix[0, 0] = c
-            rotation_matrix[0, 2] = s
-            rotation_matrix[2, 0] = -s
-            rotation_matrix[2, 2] = c
-        else:  # Rotate around z-axis
-            rotation_matrix[0, 0] = c
-            rotation_matrix[0, 1] = -s
-            rotation_matrix[1, 0] = s
-            rotation_matrix[1, 1] = c
-        
-        # Apply rotation
-        rotated_point_cloud = np.matmul(point_cloud, rotation_matrix.T)
-        
-        # Convert back to original type
-        if original_type == 'torch':
-            rotated_point_cloud = torch.from_numpy(rotated_point_cloud).to(device)
+        if point_cloud.shape[1] > 3:
+            # If point cloud has more than 3 dimensions (e.g., RGB), keep those dimensions
+            other_features = point_cloud[:, 3:]
+            rotated_point_cloud = np.column_stack((rotated_xyz, other_features))
+        else:
+            rotated_point_cloud = rotated_xyz
         
         return rotated_point_cloud
 
-class PointCloudJitter:
+class RandomScale:
     """
-    Apply random jitter to point cloud.
+    Randomly scale the point cloud.
+    """
+    def __init__(self, scale_range=(0.8, 1.2)):
+        self.scale_range = scale_range
+    
+    def __call__(self, point_cloud):
+        scale = np.random.uniform(*self.scale_range)
+        
+        # Only scale XYZ coordinates, preserve other channels
+        xyz = point_cloud[:, :3]
+        scaled_xyz = xyz * scale
+        
+        if point_cloud.shape[1] > 3:
+            # If point cloud has more than 3 dimensions (e.g., RGB), keep those dimensions
+            other_features = point_cloud[:, 3:]
+            scaled_point_cloud = np.column_stack((scaled_xyz, other_features))
+        else:
+            scaled_point_cloud = scaled_xyz
+        
+        return scaled_point_cloud
+
+class RandomTranslation:
+    """
+    Randomly translate the point cloud.
+    """
+    def __init__(self, translation_range=(-0.2, 0.2)):
+        self.translation_range = translation_range
+    
+    def __call__(self, point_cloud):
+        translation = np.random.uniform(*self.translation_range, size=3)
+        
+        # Only translate XYZ coordinates, preserve other channels
+        xyz = point_cloud[:, :3]
+        translated_xyz = xyz + translation
+        
+        if point_cloud.shape[1] > 3:
+            # If point cloud has more than 3 dimensions (e.g., RGB), keep those dimensions
+            other_features = point_cloud[:, 3:]
+            translated_point_cloud = np.column_stack((translated_xyz, other_features))
+        else:
+            translated_point_cloud = translated_xyz
+        
+        return translated_point_cloud
+
+class RandomJitter:
+    """
+    Randomly jitter the point cloud.
     """
     def __init__(self, sigma=0.01, clip=0.05):
-        """
-        Initialize the jitter transform.
-        
-        Args:
-            sigma (float): Standard deviation of the Gaussian noise
-            clip (float): Maximum absolute value of the noise
-        """
         self.sigma = sigma
         self.clip = clip
     
     def __call__(self, point_cloud):
-        """
-        Apply jitter to point cloud.
+        # Only jitter XYZ coordinates, preserve other channels
+        xyz = point_cloud[:, :3]
+        jitter = np.clip(self.sigma * np.random.randn(*xyz.shape), -self.clip, self.clip)
+        jittered_xyz = xyz + jitter
         
-        Args:
-            point_cloud (torch.Tensor or numpy.ndarray): Point cloud of shape (N, 3)
-        
-        Returns:
-            torch.Tensor or numpy.ndarray: Jittered point cloud
-        """
-        if isinstance(point_cloud, torch.Tensor):
-            original_type = 'torch'
-            device = point_cloud.device
-            point_cloud = point_cloud.cpu().numpy()
+        if point_cloud.shape[1] > 3:
+            # If point cloud has more than 3 dimensions (e.g., RGB), keep those dimensions
+            other_features = point_cloud[:, 3:]
+            jittered_point_cloud = np.column_stack((jittered_xyz, other_features))
         else:
-            original_type = 'numpy'
-        
-        # Generate noise
-        noise = np.clip(self.sigma * np.random.randn(*point_cloud.shape), -self.clip, self.clip)
-        
-        # Apply noise
-        jittered_point_cloud = point_cloud + noise
-        
-        # Convert back to original type
-        if original_type == 'torch':
-            jittered_point_cloud = torch.from_numpy(jittered_point_cloud).to(device)
+            jittered_point_cloud = jittered_xyz
         
         return jittered_point_cloud
-
-class PointCloudScale:
-    """
-    Apply random scaling to point cloud.
-    """
-    def __init__(self, scale_range=(0.8, 1.2)):
-        """
-        Initialize the scaling transform.
-        
-        Args:
-            scale_range (tuple): Range of scaling factors to sample from
-        """
-        self.scale_range = scale_range
-    
-    def __call__(self, point_cloud):
-        """
-        Apply scaling to point cloud.
-        
-        Args:
-            point_cloud (torch.Tensor or numpy.ndarray): Point cloud of shape (N, 3)
-        
-        Returns:
-            torch.Tensor or numpy.ndarray: Scaled point cloud
-        """
-        if isinstance(point_cloud, torch.Tensor):
-            original_type = 'torch'
-            device = point_cloud.device
-            point_cloud = point_cloud.cpu().numpy()
-        else:
-            original_type = 'numpy'
-        
-        # Get random scaling factor
-        scale = random.uniform(*self.scale_range)
-        
-        # Apply scaling
-        scaled_point_cloud = point_cloud * scale
-        
-        # Convert back to original type
-        if original_type == 'torch':
-            scaled_point_cloud = torch.from_numpy(scaled_point_cloud).to(device)
-        
-        return scaled_point_cloud
-
-class PointCloudTranslation:
-    """
-    Apply random translation to point cloud.
-    """
-    def __init__(self, translation_range=(-0.2, 0.2)):
-        """
-        Initialize the translation transform.
-        
-        Args:
-            translation_range (tuple): Range of translation values to sample from
-        """
-        self.translation_range = translation_range
-    
-    def __call__(self, point_cloud):
-        """
-        Apply translation to point cloud.
-        
-        Args:
-            point_cloud (torch.Tensor or numpy.ndarray): Point cloud of shape (N, 3)
-        
-        Returns:
-            torch.Tensor or numpy.ndarray: Translated point cloud
-        """
-        if isinstance(point_cloud, torch.Tensor):
-            original_type = 'torch'
-            device = point_cloud.device
-            point_cloud = point_cloud.cpu().numpy()
-        else:
-            original_type = 'numpy'
-        
-        # Get random translation for each axis
-        translation = np.random.uniform(
-            self.translation_range[0], 
-            self.translation_range[1], 
-            size=(1, 3)
-        )
-        
-        # Apply translation
-        translated_point_cloud = point_cloud + translation
-        
-        # Convert back to original type
-        if original_type == 'torch':
-            translated_point_cloud = torch.from_numpy(translated_point_cloud).to(device)
-        
-        return translated_point_cloud
 
 class PointCloudNormalization:
     """
@@ -268,16 +164,16 @@ class PointCloudTransform:
             self.transforms.append(PointCloudNormalization())
         
         if rotate:
-            self.transforms.append(PointCloudRotation())
+            self.transforms.append(RandomRotation())
         
         if jitter:
-            self.transforms.append(PointCloudJitter())
+            self.transforms.append(RandomJitter())
         
         if scale:
-            self.transforms.append(PointCloudScale())
+            self.transforms.append(RandomScale())
         
         if translate:
-            self.transforms.append(PointCloudTranslation())
+            self.transforms.append(RandomTranslation())
     
     def __call__(self, sample):
         """

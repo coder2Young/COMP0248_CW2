@@ -22,6 +22,7 @@ from src.pipelineB.dataset import get_dataloaders
 from src.pipelineB.config import load_config, save_config
 from src.utils.metrics import compute_classification_metrics, compute_depth_metrics
 from src.utils.visualization import plot_confusion_matrix, visualize_classification_results, plot_metrics_comparison
+from src.data_utils.realsense_dataset import get_realsense_dataloader
 
 # Set up logger
 logger = logging.getLogger('evaluation')
@@ -590,6 +591,73 @@ def main(args):
         num_vis_samples=args.num_vis_samples
     )
     
+    # Evaluate on Sun3D dataset
+    logger.info("===== Evaluating on Sun3D dataset =====")
+    sun3d_loss, sun3d_metrics, sun3d_depth_metrics = evaluate(
+        model=model,
+        dataloader=test_loader,
+        criterion=criterion,
+        device=device,
+        output_dir=os.path.join(output_dir, 'sun3d'),
+        visualize=args.visualize,
+        num_vis_samples=args.num_vis_samples
+    )
+    
+    # Evaluate on RealSense dataset if requested
+    if args.eval_realsense:
+        logger.info("===== Evaluating on RealSense dataset =====")
+        
+        # Get RealSense dataloader
+        realsense_loader = get_realsense_dataloader(config, pipeline='pipelineB')
+        logger.info(f"RealSense dataset loaded with {len(realsense_loader.dataset)} samples")
+        
+        # Evaluate on RealSense dataset
+        realsense_loss, realsense_metrics, realsense_depth_metrics = evaluate(
+            model=model,
+            dataloader=realsense_loader,
+            criterion=criterion,
+            device=device,
+            output_dir=os.path.join(output_dir, 'realsense'),
+            visualize=args.visualize,
+            num_vis_samples=args.num_vis_samples
+        )
+        
+        # Print comparison between datasets for classification
+        logger.info("===== Classification Metrics Comparison =====")
+        logger.info(f"Metric\t\tSun3D\t\tRealSense")
+        logger.info(f"Loss\t\t{sun3d_loss:.4f}\t\t{realsense_loss:.4f}")
+        logger.info(f"Accuracy\t{sun3d_metrics['accuracy']:.4f}\t\t{realsense_metrics['accuracy']:.4f}")
+        logger.info(f"Precision\t{sun3d_metrics['precision']:.4f}\t\t{realsense_metrics['precision']:.4f}")
+        logger.info(f"Recall\t\t{sun3d_metrics['recall']:.4f}\t\t{realsense_metrics['recall']:.4f}")
+        logger.info(f"F1 Score\t{sun3d_metrics['f1_score']:.4f}\t\t{realsense_metrics['f1_score']:.4f}")
+        logger.info(f"Specificity\t{sun3d_metrics['specificity']:.4f}\t\t{realsense_metrics['specificity']:.4f}")
+        
+        # Print comparison for depth metrics if available
+        if sun3d_depth_metrics and realsense_depth_metrics:
+            logger.info("===== Depth Metrics Comparison =====")
+            logger.info(f"Metric\t\tSun3D\t\tRealSense")
+            for metric in sun3d_depth_metrics:
+                if metric in realsense_depth_metrics:
+                    logger.info(f"{metric}\t\t{sun3d_depth_metrics[metric]:.4f}\t\t{realsense_depth_metrics[metric]:.4f}")
+        
+        # Save comparison results
+        comparison_file = os.path.join(output_dir, 'dataset_comparison.json')
+        comparison_data = {
+            'sun3d': {
+                'loss': float(sun3d_loss),
+                'classification': {k: float(v) for k, v in sun3d_metrics.items()},
+                'depth': {k: float(v) for k, v in sun3d_depth_metrics.items()} if sun3d_depth_metrics else {}
+            },
+            'realsense': {
+                'loss': float(realsense_loss),
+                'classification': {k: float(v) for k, v in realsense_metrics.items()},
+                'depth': {k: float(v) for k, v in realsense_depth_metrics.items()} if realsense_depth_metrics else {}
+            }
+        }
+        
+        with open(comparison_file, 'w') as f:
+            json.dump(comparison_data, f, indent=4)
+    
     logger.info("Evaluation completed!")
 
 if __name__ == '__main__':
@@ -598,6 +666,7 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', type=str, default=None, help='Path to model checkpoint')
     parser.add_argument('--visualize', action='store_true', help='Visualize results')
     parser.add_argument('--num_vis_samples', type=int, default=20, help='Number of samples to visualize')
+    parser.add_argument('--eval_realsense', action='store_true', help='Evaluate on RealSense dataset')
     args = parser.parse_args()
     
     main(args) 
