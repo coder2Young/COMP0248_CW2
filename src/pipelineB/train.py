@@ -55,6 +55,9 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, logger, e
     Returns:
         tuple: (epoch_loss, epoch_metrics)
     """
+    # Enable anomaly detection to pinpoint the in-place operation issue
+    torch.autograd.set_detect_anomaly(True)
+    
     model.train()
     epoch_loss = 0.0
     all_preds = []

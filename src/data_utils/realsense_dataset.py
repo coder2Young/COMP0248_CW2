@@ -171,16 +171,19 @@ def get_realsense_dataloader(config, pipeline='pipelineA'):
     """
     # Create the dataset with the correct data root
     dataset = RealSenseDataset(
-        data_root="data/RealSense",  # 使用正确的数据路径
+        data_root="data/RealSense",  # Correct data path
         num_points=config['data']['num_points'],
-        use_rgb=config['data'].get('use_rgb', False),  # 使用配置中的设置
+        use_rgb=config['data'].get('use_rgb', False),  # Use setting from config
         transform=None  # No transform for evaluation
     )
+    
+    # Use evaluation batch size for RealSense evaluation
+    batch_size = config['data'].get('eval_batch_size', config['data'].get('batch_size', 4))
     
     # Create the dataloader
     dataloader = torch.utils.data.DataLoader(
         dataset,
-        batch_size=config['data']['batch_size'],
+        batch_size=batch_size,
         shuffle=False,
         num_workers=config['data']['num_workers'],
         pin_memory=True

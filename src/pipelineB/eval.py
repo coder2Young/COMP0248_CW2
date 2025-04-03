@@ -247,265 +247,129 @@ def visualize_depth_classification_with_gt(rgb_image, pred_depth, gt_depth=None,
     else:
         plt.show()
 
-def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, num_vis_samples=20):
+def evaluate(model, device, config_file, output_dir=None, visualize=False, num_vis_samples=10):
     """
     Evaluate the model on the test set.
     
     Args:
-        model (torch.nn.Module): Model to evaluate
-        dataloader (torch.utils.data.DataLoader): Test data loader
-        criterion (torch.nn.Module): Loss function
-        device (torch.device): Device to use for evaluation
-        output_dir (str): Directory to save results
+        model (nn.Module): Model to evaluate
+        device (torch.device): Device to use
+        config_file (str): Path to the configuration file
+        output_dir (str, optional): Directory to save results
         visualize (bool): Whether to visualize results
         num_vis_samples (int): Number of samples to visualize
     
     Returns:
-        tuple: (test_loss, test_metrics, depth_metrics)
+        dict: Dictionary of metrics
     """
-    model.eval()
-    test_loss = 0.0
-    all_preds = []
-    all_targets = []
+    # Load configuration
+    config = load_config(config_file)
     
-    # For depth evaluation
-    depth_errors = {
-        'rmse': [],
-        'mae': [],
-        'rel': [],
-        'a1': [],
-        'a2': [],
-        'a3': []
-    }
-    valid_depth_samples = 0
+    # Set output directory
+    if output_dir is None:
+        output_dir = os.path.join(config['logging']['log_dir'], config['logging']['experiment_name'])
     
-    # Sample info for debugging
-    sample_info = []
-    
-    # Create directories for outputs
+    # Create output directory
     os.makedirs(output_dir, exist_ok=True)
+    
+    # Get test dataloader
+    # Use eval_batch_size for testing
+    test_dataloader = get_dataloader(config, 'test', transform=None, batch_size=config['data'].get('eval_batch_size', config['data'].get('batch_size', 4)))
+    
+    # Set model to evaluation mode
+    model.eval()
+    
+    # Initialize metrics
+    all_labels = []
+    all_preds = []
+    
+    # Initialize visualization
     if visualize:
-        vis_dir = os.path.join(output_dir, 'visualizations')
+        vis_dir = os.path.join(output_dir, 'visualization')
         os.makedirs(vis_dir, exist_ok=True)
+        vis_count = 0
     
-    # Sample data for visualization
-    vis_data = []
-    
-    logger.info("Starting evaluation...")
-    
+    # Evaluate model
     with torch.no_grad():
-        for batch_idx, data in enumerate(tqdm(dataloader, desc="Testing")):
-            # Get data
+        for batch_idx, data in enumerate(tqdm(test_dataloader)):
+            # Get inputs and labels
             inputs = data['rgb_image'].to(device)
-            targets = data['label'].to(device)
+            labels = data['binary_label'].to(device)
             
-            # Get ground truth depth if available
-            gt_depth = data.get('gt_depth')
-            if gt_depth is not None:
-                gt_depth = gt_depth.to(device)
+            # Forward pass
+            outputs, depth_maps = model(inputs, return_depth=True)
             
-            # Try to access sequence and subdir information if available
-            sequences = data.get('sequence', ['unknown'] * len(inputs))
-            subdirs = data.get('subdir', ['unknown'] * len(inputs))
-            file_paths = data.get('file_path', ['unknown'] * len(inputs))
-            
-            # Forward pass with depth maps
-            outputs, pred_depth = model(inputs, return_depth=True)
-            loss = criterion(outputs, targets)
-            
-            # Update metrics
-            test_loss += loss.item()
-            
-            # Convert outputs to predictions
+            # Get predictions
             preds = torch.argmax(outputs, dim=1)
-            probabilities = torch.softmax(outputs, dim=1)
             
-            # Store predictions and targets for metrics computation
-            all_preds.extend(preds.cpu().numpy())
-            all_targets.extend(targets.cpu().numpy())
+            # Append to lists for metrics computation
+            all_labels.append(labels.cpu().numpy())
+            all_preds.append(preds.cpu().numpy())
             
-            # Evaluate depth estimation if ground truth is available
-            if gt_depth is not None:
-                for i in range(len(inputs)):
-                    sample_gt_depth = gt_depth[i]
-                    sample_pred_depth = pred_depth[i]
+            # Visualize if needed
+            if visualize and vis_count < num_vis_samples:
+                for i in range(min(inputs.size(0), num_vis_samples - vis_count)):
+                    # Get image, depth map, and prediction
+                    image = inputs[i].cpu().numpy().transpose(1, 2, 0)
+                    depth_map = depth_maps[i].cpu().numpy()
+                    pred = preds[i].item()
+                    label = labels[i].item()
                     
-                    # Skip samples with no valid depth
-                    if torch.sum(sample_gt_depth > 0) < 100:  # Require at least 100 valid pixels
-                        continue
+                    # Normalize image for visualization
+                    image = (image * 255).astype(np.uint8)
                     
-                    # Compute depth metrics
-                    metrics = compute_depth_metrics(sample_pred_depth, sample_gt_depth)
+                    # Normalize depth map for visualization
+                    depth_map = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min() + 1e-8)
+                    depth_map = (depth_map * 255).astype(np.uint8)
+                    depth_map = cv2.applyColorMap(depth_map, cv2.COLORMAP_JET)
                     
-                    # Skip samples with invalid metrics
-                    if any(np.isnan(list(metrics.values()))):
-                        continue
+                    # Create visualization
+                    if pred == label:
+                        result_text = "Correct"
+                        color = (0, 255, 0)  # Green for correct
+                    else:
+                        result_text = "Wrong"
+                        color = (255, 0, 0)  # Red for wrong
                     
-                    # Accumulate metrics
-                    for k, v in metrics.items():
-                        depth_errors[k].append(v)
+                    # Add text to image
+                    image = cv2.putText(
+                        cv2.cvtColor(image, cv2.COLOR_RGB2BGR),
+                        f"Pred: {pred}, GT: {label} ({result_text})",
+                        (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7,
+                        color,
+                        2
+                    )
                     
-                    valid_depth_samples += 1
-            
-            # Store detailed sample info for debugging
-            for i in range(len(inputs)):
-                sample_info.append({
-                    'batch_idx': batch_idx,
-                    'sample_idx': i,
-                    'sequence': sequences[i] if isinstance(sequences, list) else 'unknown',
-                    'subdir': subdirs[i] if isinstance(subdirs, list) else 'unknown',
-                    'file_path': file_paths[i] if isinstance(file_paths, list) else 'unknown',
-                    'target': targets[i].cpu().item(),
-                    'prediction': preds[i].cpu().item(),
-                    'confidence': probabilities[i][preds[i]].cpu().item()
-                })
-            
-            # Store some samples for visualization
-            if visualize and len(vis_data) < num_vis_samples:
-                for i in range(min(len(inputs), num_vis_samples - len(vis_data))):
-                    # Store sample for visualization
-                    sample_gt_depth = gt_depth[i].cpu() if gt_depth is not None else None
+                    # Save visualization
+                    vis_path = os.path.join(vis_dir, f"sample_{batch_idx}_{i}.png")
+                    cv2.imwrite(vis_path, image)
                     
-                    vis_data.append({
-                        'rgb_tensor': inputs[i].cpu(),
-                        'pred_depth': pred_depth[i].cpu(),
-                        'gt_depth': sample_gt_depth,
-                        'target': targets[i].cpu().item(),
-                        'pred': preds[i].cpu().item(),
-                        'confidence': probabilities[i][preds[i]].cpu().item(),
-                        'sequence': sequences[i] if isinstance(sequences, list) else 'unknown',
-                        'subdir': subdirs[i] if isinstance(subdirs, list) else 'unknown',
-                        'file_path': file_paths[i] if isinstance(file_paths, list) else 'unknown',
-                        'batch_idx': batch_idx,
-                        'sample_idx': i
-                    })
+                    # Save depth map
+                    depth_path = os.path.join(vis_dir, f"depth_{batch_idx}_{i}.png")
+                    cv2.imwrite(depth_path, depth_map)
+                    
+                    vis_count += 1
     
-    # Compute average loss
-    test_loss /= len(dataloader)
+    # Concatenate all labels and predictions
+    all_labels = np.concatenate(all_labels)
+    all_preds = np.concatenate(all_preds)
     
-    # Compute classification metrics
-    test_metrics = compute_classification_metrics(
-        np.array(all_targets),
-        np.array(all_preds)
-    )
-    
-    # Compute average depth metrics
-    depth_metrics = {}
-    if valid_depth_samples > 0:
-        for k, v in depth_errors.items():
-            if v:  # Check if list is not empty
-                depth_metrics[k] = float(np.mean(v))
-            else:
-                depth_metrics[k] = float('nan')
-    
-    # Log depth evaluation results
-    if depth_metrics:
-        logger.info("===== Depth Estimation Metrics =====")
-        logger.info(f"Valid depth samples: {valid_depth_samples}")
-        logger.info(f"RMSE:  {depth_metrics.get('rmse', float('nan')):.4f} meters")
-        logger.info(f"MAE:   {depth_metrics.get('mae', float('nan')):.4f} meters")
-        logger.info(f"REL:   {depth_metrics.get('rel', float('nan')):.4f}")
-        logger.info(f"δ1:    {depth_metrics.get('a1', float('nan')):.4f} (% under 1.25)")
-        logger.info(f"δ2:    {depth_metrics.get('a2', float('nan')):.4f} (% under 1.25²)")
-        logger.info(f"δ3:    {depth_metrics.get('a3', float('nan')):.4f} (% under 1.25³)")
-    else:
-        logger.info("No valid depth samples for evaluation.")
-    
-    # Log label distribution
-    target_counts = np.bincount(np.array(all_targets), minlength=2)
-    pred_counts = np.bincount(np.array(all_preds), minlength=2)
-    
-    logger.info("===== Label Distribution Statistics =====")
-    logger.info(f"Ground Truth: No Table (0): {target_counts[0]}, Table (1): {target_counts[1]}")
-    logger.info(f"Predictions: No Table (0): {pred_counts[0]}, Table (1): {pred_counts[1]}")
-    
-    # Save detailed sample info to CSV
-    sample_info_file = os.path.join(output_dir, 'sample_predictions.csv')
-    with open(sample_info_file, 'w') as f:
-        f.write("batch_idx,sample_idx,sequence,subdir,file_path,target,prediction,confidence\n")
-        for sample in sample_info:
-            f.write(f"{sample['batch_idx']},{sample['sample_idx']},{sample['sequence']},"
-                    f"{sample['subdir']},{sample['file_path']},{sample['target']},"
-                    f"{sample['prediction']},{sample['confidence']:.4f}\n")
-    
-    # Print first 20 predictions for manual verification
-    logger.info("===== First 20 Sample Predictions =====")
-    logger.info("Idx\tSequence\tSubdir\tGround Truth\tPrediction\tConfidence")
-    for i, sample in enumerate(sample_info[:20]):
-        logger.info(f"{i}\t{sample['sequence']}\t{sample['subdir']}\t{sample['target']}\t{sample['prediction']}\t{sample['confidence']:.4f}")
+    # Compute metrics
+    metrics = compute_classification_metrics(all_labels, all_preds)
     
     # Print metrics
-    logger.info("===== Classification Metrics =====")
-    logger.info(f"Test Loss:       {test_loss:.6f}")
-    logger.info(f"Test Accuracy:   {test_metrics['accuracy']:.4f}")
-    logger.info(f"Test Precision:  {test_metrics['precision']:.4f}")
-    logger.info(f"Test Recall:     {test_metrics['recall']:.4f}")
-    logger.info(f"Test F1 Score:   {test_metrics['f1_score']:.4f}")
-    logger.info(f"Test Specificity: {test_metrics['specificity']:.4f}")
+    print("Evaluation metrics:")
+    for key, value in metrics.items():
+        print(f"{key}: {value:.4f}")
     
-    # Print confusion matrix for better visualization
-    cm = confusion_matrix(all_targets, all_preds)
-    logger.info("===== Confusion Matrix =====")
-    logger.info("GT\\Pred\tNo Table(0)\tTable(1)")
-    logger.info(f"No Table(0)\t{cm[0][0]}\t\t{cm[0][1]}")
-    logger.info(f"Table(1)\t{cm[1][0]}\t\t{cm[1][1]}")
+    # Save metrics
+    metrics_path = os.path.join(output_dir, 'metrics.json')
+    with open(metrics_path, 'w') as f:
+        json.dump(metrics, f, indent=4)
     
-    # Convert NumPy types to native Python types for JSON serialization
-    serializable_metrics = {}
-    for key, value in test_metrics.items():
-        if isinstance(value, np.integer):
-            serializable_metrics[key] = int(value)
-        elif isinstance(value, np.floating):
-            serializable_metrics[key] = float(value)
-        elif isinstance(value, np.ndarray):
-            serializable_metrics[key] = value.tolist()
-        else:
-            serializable_metrics[key] = value
-    
-    # Add depth metrics to serializable metrics
-    serializable_metrics['depth'] = {k: float(v) if not np.isnan(v) else None for k, v in depth_metrics.items()}
-    
-    # Save metrics to JSON file
-    metrics_file = os.path.join(output_dir, 'metrics.json')
-    with open(metrics_file, 'w') as f:
-        json.dump({
-            'loss': float(test_loss),
-            **serializable_metrics
-        }, f, indent=4)
-    
-    # Update visualization function to include ground truth depth
-    if visualize:
-        logger.info(f"Visualizing {len(vis_data)} samples with RGB images, predicted depths, and ground truth depths...")
-        for i, sample in enumerate(vis_data):
-            # Get original RGB image
-            rgb_image = load_rgb_image(
-                sequence=sample['sequence'], 
-                subdir=sample['subdir'],
-                file_path=sample['file_path'],
-                data_root=dataloader.dataset.dataset.data_root 
-                    if hasattr(dataloader.dataset, 'dataset') else 'data/CW2-Dataset/data'
-            )
-            
-            if rgb_image is not None:
-                # Set up the visualization path
-                vis_file = os.path.join(vis_dir, f'sample_{i}_gt_{sample["target"]}_pred_{sample["pred"]}.png')
-                
-                # Visualize with depth comparison
-                visualize_depth_classification_with_gt(
-                    rgb_image=rgb_image,
-                    pred_depth=sample['pred_depth'].numpy(),
-                    gt_depth=sample['gt_depth'].numpy() if sample['gt_depth'] is not None else None,
-                    ground_truth_label=sample['target'],
-                    predicted_label=sample['pred'],
-                    confidence=sample['confidence'],
-                    class_names=['No Table', 'Table'],
-                    title=f'Sample {i} - {sample["sequence"]}/{sample["subdir"]}',
-                    save_path=vis_file
-                )
-                
-                logger.info(f"Saved visualization to {vis_file}")
-    
-    return test_loss, test_metrics, depth_metrics
+    return metrics
 
 def main(args):
     """
@@ -583,9 +447,8 @@ def main(args):
     # Evaluate model
     test_loss, test_metrics, depth_metrics = evaluate(
         model=model,
-        dataloader=test_loader,
-        criterion=criterion,
         device=device,
+        config_file=args.config,
         output_dir=output_dir,
         visualize=args.visualize,
         num_vis_samples=args.num_vis_samples
@@ -595,9 +458,8 @@ def main(args):
     logger.info("===== Evaluating on Sun3D dataset =====")
     sun3d_loss, sun3d_metrics, sun3d_depth_metrics = evaluate(
         model=model,
-        dataloader=test_loader,
-        criterion=criterion,
         device=device,
+        config_file=args.config,
         output_dir=os.path.join(output_dir, 'sun3d'),
         visualize=args.visualize,
         num_vis_samples=args.num_vis_samples
@@ -614,9 +476,8 @@ def main(args):
         # Evaluate on RealSense dataset
         realsense_loss, realsense_metrics, realsense_depth_metrics = evaluate(
             model=model,
-            dataloader=realsense_loader,
-            criterion=criterion,
             device=device,
+            config_file=args.config,
             output_dir=os.path.join(output_dir, 'realsense'),
             visualize=args.visualize,
             num_vis_samples=args.num_vis_samples

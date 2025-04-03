@@ -239,7 +239,32 @@ class RGBTransform:
         
         return image
 
-def get_dataloader(config, split='train', transform=None):
+def get_dataloaders(config_file):
+    """
+    Get train, validation, and test dataloaders.
+    
+    Args:
+        config_file (str): Path to the configuration file
+    
+    Returns:
+        tuple: (train_dataloader, val_dataloader, test_dataloader)
+    """
+    # Load configuration
+    config = load_config(config_file)
+    
+    # Get transforms
+    train_transform = get_transform(config, 'train')
+    val_transform = get_transform(config, 'val')
+    test_transform = get_transform(config, 'test')
+    
+    # Get dataloaders
+    train_dataloader = get_dataloader(config, 'train', train_transform, batch_size=config['data'].get('train_batch_size', config['data'].get('batch_size', 32)))
+    val_dataloader = get_dataloader(config, 'val', val_transform, batch_size=config['data'].get('eval_batch_size', config['data'].get('batch_size', 4)))
+    test_dataloader = get_dataloader(config, 'test', test_transform, batch_size=config['data'].get('eval_batch_size', config['data'].get('batch_size', 4)))
+    
+    return train_dataloader, val_dataloader, test_dataloader
+
+def get_dataloader(config, split='train', transform=None, batch_size=None):
     """
     Get dataloader for Pipeline B.
     
@@ -247,10 +272,19 @@ def get_dataloader(config, split='train', transform=None):
         config (dict): Configuration dictionary
         split (str): 'train', 'val', or 'test'
         transform (callable, optional): Transform to apply to the data
+        batch_size (int, optional): Batch size to use, overriding config if provided
     
     Returns:
         torch.utils.data.DataLoader: DataLoader for the specified split
     """
+    # If batch_size not provided, use the one from config
+    if batch_size is None:
+        # Use appropriate batch size based on mode (train vs eval)
+        if split == 'train':
+            batch_size = config['data'].get('train_batch_size', config['data'].get('batch_size', 32))
+        else:
+            batch_size = config['data'].get('eval_batch_size', config['data'].get('batch_size', 4))
+    
     # Get train and test sequences
     train_sequences, test_sequences = DatasetSplitter.get_train_test_sequences()
     
@@ -285,12 +319,12 @@ def get_dataloader(config, split='train', transform=None):
             subset_indices = indices[split_idx:]
         
         # Create subset
-        dataset = data.Subset(dataset, subset_indices)
+        dataset = torch.utils.data.Subset(dataset, subset_indices)
     
     # Create dataloader
-    dataloader = data.DataLoader(
+    dataloader = torch.utils.data.DataLoader(
         dataset,
-        batch_size=config['data']['batch_size'],
+        batch_size=batch_size,
         shuffle=(split == 'train'),
         num_workers=config['data']['num_workers'],
         pin_memory=True,
@@ -316,29 +350,4 @@ def get_transform(config, split='train'):
         image_size=config['data']['image_size']
     )
     
-    return transform
-
-def get_dataloaders(config_file):
-    """
-    Get all dataloaders for Pipeline B.
-    
-    Args:
-        config_file (str): Path to the YAML configuration file
-    
-    Returns:
-        tuple: (train_dataloader, val_dataloader, test_dataloader)
-    """
-    # Load configuration
-    config = load_config(config_file)
-    
-    # Get transforms
-    train_transform = get_transform(config, 'train')
-    val_transform = get_transform(config, 'val')
-    test_transform = get_transform(config, 'test')
-    
-    # Get dataloaders
-    train_dataloader = get_dataloader(config, 'train', train_transform)
-    val_dataloader = get_dataloader(config, 'val', val_transform)
-    test_dataloader = get_dataloader(config, 'test', test_transform)
-    
-    return train_dataloader, val_dataloader, test_dataloader 
+    return transform 
