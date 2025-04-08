@@ -192,13 +192,12 @@ def depth_to_point_cloud(depth_map, intrinsics, subsample=True, num_points=1024,
     
     return point_cloud
 
-def read_and_parse_polygon_labels(labels_file, valid_table_labels=None):
+def read_and_parse_polygon_labels(labels_file):
     """
     Read and parse polygon annotations from a file.
     
     Args:
         labels_file (str): Path to the labels file
-        valid_table_labels (list): List of valid table labels (not used for pickle format)
     
     Returns:
         dict: Dictionary mapping image timestamps to polygon annotations
@@ -227,7 +226,7 @@ def read_and_parse_polygon_labels(labels_file, valid_table_labels=None):
             for i, (polygon_list, img_name) in enumerate(zip(tabletop_labels, img_list)):
                 # Extract timestamp from image filename
                 timestamp = img_name.split('.')[0]  # Remove file extension
-                
+
                 # Convert polygon format to our internal format
                 # In pickle file, polygons are stored as [frame][table_instance][coordinate]
                 # where coordinate is [x_coords, y_coords]
@@ -253,91 +252,6 @@ def read_and_parse_polygon_labels(labels_file, valid_table_labels=None):
             
     except Exception as e:
         print(f"Error reading pickle annotations from {labels_file}: {e}")
-        
-        # Try the legacy text parsing approach as fallback
-        try:
-            if valid_table_labels is None:
-                valid_table_labels = ["table top", "dining table", "desk", "coffee table"]
-            
-            # Try different encodings and handle binary files
-            encodings_to_try = ['utf-8', 'latin-1', 'cp1252', 'ISO-8859-1']
-            
-            # Try to open as text with different encodings
-            for encoding in encodings_to_try:
-                try:
-                    with open(labels_file, 'r', encoding=encoding) as f:
-                        lines = f.readlines()
-                        
-                        current_timestamp = None
-                        current_polygons = []
-                        
-                        for line in lines:
-                            line = line.strip()
-                            
-                            # Skip empty lines
-                            if not line:
-                                continue
-                            
-                            # Check if line contains a timestamp
-                            if line.startswith("timestamp:"):
-                                # Save previous annotations if any
-                                if current_timestamp is not None and current_polygons:
-                                    annotations[current_timestamp] = current_polygons
-                                
-                                # Start new annotation
-                                current_timestamp = line.split(":", 1)[1].strip()
-                                current_polygons = []
-                            
-                            # Check if line contains a polygon
-                            elif line.startswith("polygon:") and current_timestamp is not None:
-                                # Extract label and points
-                                polygon_info = line.split(":", 1)[1].strip()
-                                
-                                # Parse label and points (format may vary)
-                                label_and_points = polygon_info.split(";")
-                                
-                                if len(label_and_points) >= 2:
-                                    label = label_and_points[0].strip()
-                                    
-                                    # Only consider valid table labels
-                                    if any(table_label.lower() in label.lower() for table_label in valid_table_labels):
-                                        points_str = ";".join(label_and_points[1:])
-                                        
-                                        # Parse points (format may vary)
-                                        points = []
-                                        for point_str in points_str.split(","):
-                                            try:
-                                                x, y = map(float, point_str.strip().split())
-                                                points.append((x, y))
-                                            except:
-                                                pass
-                                        
-                                        if points:
-                                            current_polygons.append({
-                                                "label": label,
-                                                "points": points
-                                            })
-                        
-                        # Save the last annotation if any
-                        if current_timestamp is not None and current_polygons:
-                            annotations[current_timestamp] = current_polygons
-                        
-                        # If we successfully parsed the file, return annotations
-                        return annotations
-                        
-                except UnicodeDecodeError:
-                    # Try the next encoding
-                    continue
-                except Exception as text_e:
-                    # For other errors, try the next encoding
-                    print(f"Error in text parsing fallback: {text_e}")
-                    continue
-            
-            print(f"Warning: Could not parse file: {labels_file} with any method.")
-            return {}
-        except Exception as fallback_e:
-            print(f"Error in fallback parsing for {labels_file}: {fallback_e}")
-            return {}
 
 def polygon_to_mask(polygon_points, image_shape):
     """

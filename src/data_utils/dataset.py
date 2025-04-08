@@ -34,9 +34,6 @@ class Sun3DBaseDataset(Dataset):
         self.split = split
         self.transform = transform
         
-        # Valid table labels
-        self.valid_table_labels = ["table top", "dining table", "desk", "coffee table"]
-        
         # Sequences known to be all negative samples (no tables)
         self.all_negative_sequences = ["mit_gym_z_squash", "harvard_tea_2"]
         
@@ -98,7 +95,7 @@ class Sun3DBaseDataset(Dataset):
                 # Check if sequence is in all_negative_sequences list or if labels file exists
                 if sequence in self.all_negative_sequences:
                     # For sequences known to be all negative, use empty annotations
-                    print(f"Sequence {sequence} is known to have all negative samples (no tables)")
+                    #print(f"Sequence {sequence} is known to have all negative samples (no tables)")
                     annotations = {}  # Empty annotations for all images
                 elif os.path.exists(labels_file):
                     try:
@@ -138,7 +135,7 @@ class Sun3DBaseDataset(Dataset):
                     # For all_negative_sequences, this will always be an empty list
                     image_annotations = annotations.get(rgb_filename, [])
                     has_table = len(image_annotations) > 0
-                    
+                   
                     # Add the pair to the list
                     data_pair = {
                         'rgb_file': rgb_file,
@@ -154,6 +151,14 @@ class Sun3DBaseDataset(Dataset):
                     
                     data_pairs.append(data_pair)
         
+        # Print the number of sample has table and no table
+        if (self.split == "train" or self.split == "val"):
+            print("Train Datset:")
+        else:
+            print("Test Datset:")
+        print(f"Number of sample has table: {sum(1 for dp in data_pairs if dp['has_table'])}")
+        print(f"Number of sample no table: {sum(1 for dp in data_pairs if not dp['has_table'])}")
+
         return data_pairs
     
     def _get_timestamp_from_filename(self, filename):
