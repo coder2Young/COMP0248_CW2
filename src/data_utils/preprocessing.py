@@ -99,15 +99,15 @@ def normalize_depth(depth_map, min_depth=0.5, max_depth=10.0):
 
 def depth_to_point_cloud(depth_map, intrinsics, subsample=True, num_points=1024, min_depth=0.5, max_depth=10.0):
     """
-    Convert depth map to point cloud using camera intrinsics.
+    Convert depth map to point cloud using camera intrinsics with Open3D.
     
     Args:
-        depth_map (numpy.ndarray): Input depth map
+        depth_map (numpy.ndarray): Input depth map in meters
         intrinsics (dict): Camera intrinsics including fx, fy, cx, cy
         subsample (bool): Whether to subsample the point cloud
         num_points (int): Number of points to sample if subsample is True
-        min_depth (float): Minimum valid depth value
-        max_depth (float): Maximum valid depth value
+        min_depth (float): Minimum valid depth value in meters
+        max_depth (float): Maximum valid depth value in meters
     
     Returns:
         numpy.ndarray: Point cloud of shape (N, 3) where N is num_points if subsample is True
@@ -118,10 +118,10 @@ def depth_to_point_cloud(depth_map, intrinsics, subsample=True, num_points=1024,
         print("Warning: Empty depth map received, returning zero point cloud")
         return np.zeros((num_points, 3))
     
-    # Get depth dimensions
+    # Create Open3D intrinsic object
     height, width = depth_map.shape
     
-    # Check intrinsics
+    # Ensure intrinsics are available
     required_keys = ['fx', 'fy', 'cx', 'cy']
     if not all(key in intrinsics for key in required_keys):
         print(f"Warning: Missing intrinsics keys: {[key for key in required_keys if key not in intrinsics]}")
@@ -131,66 +131,59 @@ def depth_to_point_cloud(depth_map, intrinsics, subsample=True, num_points=1024,
             if key not in intrinsics:
                 intrinsics[key] = default_values[key]
     
-    # Create pixel coordinates grid
-    v, u = np.indices((height, width))
+    # Create Open3D camera intrinsics
+    o3d_intrinsics = o3d.camera.PinholeCameraIntrinsic(
+        width, height, 
+        intrinsics['fx'], intrinsics['fy'], 
+        intrinsics['cx'], intrinsics['cy']
+    )
     
-    # Get valid depth mask
-    valid_mask = (depth_map > min_depth) & (depth_map < max_depth)
+    # Create depth image from numpy array
+    # Open3D expects depth in meters, so we don't need to convert if already in meters
+    depth_image = o3d.geometry.Image(depth_map.astype(np.float32))
     
-    # If no valid values, return zeros
-    valid_count = np.sum(valid_mask)
-    if valid_count == 0:
-        print("Warning: No valid depth values found, returning zero point cloud")
+    # Create point cloud from depth image
+    pcd = o3d.geometry.PointCloud.create_from_depth_image(
+        depth_image, 
+        o3d_intrinsics,
+        depth_scale=1.0,  # depth is already in meters
+        depth_trunc=max_depth,
+        stride=1
+    )
+    
+    # Get points as numpy array
+    points = np.asarray(pcd.points)
+    
+    # Filter points based on min depth
+    if points.shape[0] > 0:
+        # Calculate depth of each point (z coordinate)
+        depths = points[:, 2]
+        valid_mask = depths >= min_depth
+        points = points[valid_mask]
+    
+    # Check if we have any valid points
+    if points.shape[0] == 0:
+        print("Warning: No valid points after filtering, returning zero point cloud")
         return np.zeros((num_points, 3))
     
-    # Extract valid depth values and pixel coordinates
-    z = depth_map.flatten() # [valid_mask]
-    # print(depth_map.shape)
-    # print(depth_map[valid_mask].shape)
-    v_valid = v.flatten() # [valid_mask]
-    u_valid = u.flatten() # [valid_mask]
-    
-    # Get intrinsics
-    fx = intrinsics['fx']
-    fy = intrinsics['fy']
-    cx = intrinsics['cx']
-    cy = intrinsics['cy']
-    
-    # Calculate 3D coordinates
-    x = (u_valid - cx) * z / fx
-    y = (v_valid - cy) * z / fy
-    
-    # Stack the coordinates to form the point cloud
-    point_cloud = np.stack((x, y, z), axis=-1)
-    
     # Subsample the point cloud if needed
-    if subsample and point_cloud.shape[0] > 0:
-        if point_cloud.shape[0] > num_points:
+    if subsample:
+        if points.shape[0] > num_points:
             # Randomly sample points
-            indices = np.random.choice(point_cloud.shape[0], num_points, replace=False)
-            point_cloud = point_cloud[indices]
-        elif point_cloud.shape[0] < num_points:
+            indices = np.random.choice(points.shape[0], num_points, replace=False)
+            points = points[indices]
+        elif points.shape[0] < num_points:
             # Pad with duplicated points or zeros if not enough points
-            if point_cloud.shape[0] > 0:
+            if points.shape[0] > 0:
                 # Duplicate some points
-                padding_indices = np.random.choice(point_cloud.shape[0], num_points - point_cloud.shape[0], replace=True)
-                padding = point_cloud[padding_indices]
+                padding_indices = np.random.choice(points.shape[0], num_points - points.shape[0], replace=True)
+                padding = points[padding_indices]
             else:
                 # Use zeros if no valid points
-                padding = np.zeros((num_points - point_cloud.shape[0], 3))
-            point_cloud = np.vstack((point_cloud, padding))
+                padding = np.zeros((num_points - points.shape[0], 3))
+            points = np.vstack((points, padding))
     
-    # Ensure the output has the correct shape
-    if point_cloud.shape[0] != num_points and subsample:
-        print(f"Warning: Point cloud has {point_cloud.shape[0]} points, expected {num_points}")
-        if point_cloud.shape[0] == 0:
-            point_cloud = np.zeros((num_points, 3))
-        else:
-            # Resize by duplicating or truncating
-            indices = np.random.choice(point_cloud.shape[0], num_points, replace=True)
-            point_cloud = point_cloud[indices]
-    
-    return point_cloud
+    return points.astype(np.float32)
 
 def read_and_parse_polygon_labels(labels_file):
     """
@@ -354,71 +347,103 @@ def point_cloud_to_depth(point_cloud, intrinsics, image_shape):
 
 def depth_to_colored_point_cloud(depth_map, rgb_image, intrinsics, subsample=True, num_points=1024, min_depth=0.5, max_depth=10.0):
     """
-    Convert depth map to colored point cloud using camera intrinsics and RGB image.
+    Convert depth map to colored point cloud using camera intrinsics and RGB image with Open3D.
     
     Args:
-        depth_map (numpy.ndarray): Input depth map
+        depth_map (numpy.ndarray): Input depth map in meters
         rgb_image (numpy.ndarray): RGB image of shape (H, W, 3)
         intrinsics (dict): Camera intrinsics including fx, fy, cx, cy
         subsample (bool): Whether to subsample the point cloud
         num_points (int): Number of points to sample if subsample is True
-        min_depth (float): Minimum valid depth value
-        max_depth (float): Maximum valid depth value
+        min_depth (float): Minimum valid depth value in meters
+        max_depth (float): Maximum valid depth value in meters
     
     Returns:
         numpy.ndarray: Colored point cloud of shape (N, 6) where N is num_points if subsample is True
                       or the number of valid depth pixels otherwise. The 6 channels are XYZ coordinates
                       and RGB values normalized to [0, 1].
     """
-    # First, generate XYZ point cloud using the existing function
-    xyz_point_cloud = depth_to_point_cloud(
-        depth_map, intrinsics, subsample=False, 
-        min_depth=min_depth, max_depth=max_depth
-    )
+    # Check if depth map and rgb image are valid
+    if depth_map is None or depth_map.size == 0 or rgb_image is None or rgb_image.size == 0:
+        print("Warning: Empty depth map or RGB image received, returning zero point cloud")
+        return np.zeros((num_points, 6))
     
-    # If no valid points were found, return zeros with RGB
-    if xyz_point_cloud.shape[0] == 0:
-        if subsample:
-            return np.zeros((num_points, 6), dtype=np.float32)
-        else:
-            return np.zeros((0, 6), dtype=np.float32)
-    
-    # Get the original height and width
+    # Create Open3D intrinsic object
     height, width = depth_map.shape
     
-    # Get camera intrinsics
-    fx = intrinsics['fx']
-    fy = intrinsics['fy']
-    cx = intrinsics['cx']
-    cy = intrinsics['cy']
+    # Ensure intrinsics are available
+    required_keys = ['fx', 'fy', 'cx', 'cy']
+    if not all(key in intrinsics for key in required_keys):
+        print(f"Warning: Missing intrinsics keys: {[key for key in required_keys if key not in intrinsics]}")
+        # Use default values for missing keys
+        default_values = {'fx': 525.0, 'fy': 525.0, 'cx': 319.5, 'cy': 239.5}
+        for key in required_keys:
+            if key not in intrinsics:
+                intrinsics[key] = default_values[key]
     
-    # Initialize RGB values
-    rgb_values = np.zeros((xyz_point_cloud.shape[0], 3), dtype=np.float32)
+    # Create Open3D camera intrinsics
+    o3d_intrinsics = o3d.camera.PinholeCameraIntrinsic(
+        width, height, 
+        intrinsics['fx'], intrinsics['fy'], 
+        intrinsics['cx'], intrinsics['cy']
+    )
     
-    # Project 3D points back to 2D image space to sample RGB
-    for i, (x, y, z) in enumerate(xyz_point_cloud):
-        if z <= 0:
-            continue
-            
-        # Project to image coordinates
-        u = int(x * fx / z + cx)
-        v = int(y * fy / z + cy)
-        
-        # Check if projected point is inside the image
-        if 0 <= u < width and 0 <= v < height:
-            # Sample RGB value and normalize to [0, 1]
-            rgb_values[i] = rgb_image[v, u] / 255.0
+    # Create depth image from numpy array
+    depth_image = o3d.geometry.Image(depth_map.astype(np.float32))
     
-    # Combine XYZ and RGB to form 6-channel point cloud
-    colored_point_cloud = np.column_stack((xyz_point_cloud, rgb_values))
+    # Create RGB image (Open3D expects RGB images in uint8 format)
+    rgb_image_o3d = o3d.geometry.Image(rgb_image.astype(np.uint8))
     
-    # Subsample if requested
-    if subsample and colored_point_cloud.shape[0] > num_points:
-        indices = np.random.choice(colored_point_cloud.shape[0], num_points, replace=False)
-        colored_point_cloud = colored_point_cloud[indices]
-    elif subsample and colored_point_cloud.shape[0] < num_points:
-        # Pad with zeros if not enough points
-        padding = np.zeros((num_points - colored_point_cloud.shape[0], 6), dtype=np.float32)
-        colored_point_cloud = np.vstack([colored_point_cloud, padding])
+    # Create RGBD image
+    rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(
+        rgb_image_o3d, 
+        depth_image,
+        depth_scale=1.0,  # depth is already in meters
+        depth_trunc=max_depth,
+        convert_rgb_to_intensity=False
+    )
     
-    return colored_point_cloud.astype(np.float32) 
+    # Create point cloud from RGBD image
+    pcd = o3d.geometry.PointCloud.create_from_rgbd_image(
+        rgbd_image, 
+        o3d_intrinsics
+    )
+    
+    # Get points and colors as numpy arrays
+    points = np.asarray(pcd.points)
+    colors = np.asarray(pcd.colors)
+    
+    # Filter points based on min depth
+    if points.shape[0] > 0:
+        # Calculate depth of each point (z coordinate)
+        depths = points[:, 2]
+        valid_mask = depths >= min_depth
+        points = points[valid_mask]
+        colors = colors[valid_mask]
+    
+    # Check if we have any valid points
+    if points.shape[0] == 0:
+        print("Warning: No valid points after filtering, returning zero point cloud")
+        return np.zeros((num_points, 6))
+    
+    # Combine points and colors into a single array
+    point_cloud = np.column_stack((points, colors))
+    
+    # Subsample the point cloud if needed
+    if subsample:
+        if point_cloud.shape[0] > num_points:
+            # Randomly sample points
+            indices = np.random.choice(point_cloud.shape[0], num_points, replace=False)
+            point_cloud = point_cloud[indices]
+        elif point_cloud.shape[0] < num_points:
+            # Pad with duplicated points or zeros if not enough points
+            if point_cloud.shape[0] > 0:
+                # Duplicate some points
+                padding_indices = np.random.choice(point_cloud.shape[0], num_points - point_cloud.shape[0], replace=True)
+                padding = point_cloud[padding_indices]
+            else:
+                # Use zeros if no valid points
+                padding = np.zeros((num_points - point_cloud.shape[0], 6))
+            point_cloud = np.vstack((point_cloud, padding))
+    
+    return point_cloud.astype(np.float32) 

@@ -6,13 +6,16 @@ from torch.utils.data import Dataset
 import glob
 from PIL import Image
 import random
+import open3d as o3d
+import matplotlib.pyplot as plt
 
 from src.data_utils.preprocessing import (
     read_intrinsics,
     read_and_parse_polygon_labels,
     depth_to_point_cloud,
     get_image_label_from_polygons,
-    depth_to_colored_point_cloud
+    depth_to_colored_point_cloud,
+    point_cloud_to_depth
 )
 
 class Sun3DBaseDataset(Dataset):
@@ -98,11 +101,8 @@ class Sun3DBaseDataset(Dataset):
                     #print(f"Sequence {sequence} is known to have all negative samples (no tables)")
                     annotations = {}  # Empty annotations for all images
                 elif os.path.exists(labels_file):
-                    try:
-                        annotations = read_and_parse_polygon_labels(labels_file, self.valid_table_labels)
-                    except Exception as e:
-                        print(f"Error reading annotations from {labels_file}: {e}")
-                
+                    annotations = read_and_parse_polygon_labels(labels_file)
+        
                 # Count images with table annotations but don't print
                 subdir_table_count = sum(1 for polygons in annotations.values() if polygons)
                 sequence_table_count += subdir_table_count
@@ -212,6 +212,7 @@ class Sun3DBaseDataset(Dataset):
         # Convert depth map to meters if needed
         depth_map = depth_map.astype(np.float32)
         if depth_map.max() > 1000:  # If values are in millimeters
+            #print("Depth map unit is millimeters, converting to meters")
             depth_map /= 1000.0  # Convert to meters
         
         # Apply a simple median filter to reduce noise

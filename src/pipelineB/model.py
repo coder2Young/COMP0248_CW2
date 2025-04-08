@@ -122,7 +122,7 @@ class DepthClassifier(nn.Module):
     CNN-based classifier for depth maps.
     Uses a modified ResNet18 as the base architecture.
     """
-    def __init__(self, pretrained=True, num_classes=2):
+    def __init__(self, pretrained=True, num_classes=2, base_model_name="resnet18"):
         """
         Initialize the depth classifier.
         
@@ -132,16 +132,20 @@ class DepthClassifier(nn.Module):
         """
         super(DepthClassifier, self).__init__()
         
-        # Load ResNet18 model
-        self.base_model = models.resnet18(weights='IMAGENET1K_V1' if pretrained else None)
+        if base_model_name == "resnet18":
+            self.base_model = models.resnet18(weights='IMAGENET1K_V1' if pretrained else None)
+        elif base_model_name == "resnet34":
+            self.base_model = models.resnet34(weights='IMAGENET1K_V1' if pretrained else None)
+        else:
+            raise ValueError(f"Unknown model name: {base_model_name}")
         
         # Replace final fully connected layer
         num_features = self.base_model.fc.in_features
         self.base_model.fc = nn.Sequential(
-            nn.Linear(num_features, 256),
+            nn.Linear(num_features, 512),
             nn.ReLU(inplace=True),
             nn.Dropout(0.5),
-            nn.Linear(256, num_classes)
+            nn.Linear(512, num_classes)
         )
     
     def forward(self, x):
@@ -161,7 +165,7 @@ class MonocularDepthClassifier(nn.Module):
     Combined model for monocular depth estimation and classification.
     Uses a pre-trained depth estimation model and a classifier.
     """
-    def __init__(self, depth_model_type="MiDaS_small", pretrained=True, num_classes=2, freeze_depth_estimator=True):
+    def __init__(self, depth_model_type="MiDaS_small", pretrained=True, num_classes=2, freeze_depth_estimator=True, base_model_name="resnet18"):
         """
         Initialize the combined model.
         
@@ -177,7 +181,7 @@ class MonocularDepthClassifier(nn.Module):
         self.depth_estimator = DepthEstimationModel(model_type=depth_model_type)
         
         # Initialize depth classifier
-        self.classifier = DepthClassifier(pretrained=pretrained, num_classes=num_classes)
+        self.classifier = DepthClassifier(pretrained=pretrained, num_classes=num_classes, base_model_name=base_model_name)
         
         # Flag for training mode
         self.training_mode = False
@@ -307,7 +311,8 @@ def get_model(config):
         depth_model_type=config['model']['depth_model_type'],
         pretrained=config['model']['pretrained'],
         num_classes=config['model']['num_classes'],
-        freeze_depth_estimator=config['model'].get('freeze_depth_estimator', True)
+        freeze_depth_estimator=config['model'].get('freeze_depth_estimator', True),
+        base_model_name=config['model']['name']
     )
     
     return model 

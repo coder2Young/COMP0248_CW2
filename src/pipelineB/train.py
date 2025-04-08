@@ -12,6 +12,7 @@ import yaml
 import random
 from tqdm import tqdm
 from sklearn.metrics import confusion_matrix
+import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 from src.pipelineB.model import get_model
@@ -298,6 +299,51 @@ def validate(model, dataloader, criterion, device, epoch, logger):
         logger.logger.info(f"  δ3:    {depth_metrics.get('a3', float('nan')):.4f} (% under 1.25³)")
     
     return val_loss, val_metrics, depth_metrics
+
+def save_depth_visualization(pred_depth, gt_depth, image_idx, output_dir, epoch=None, batch_idx=None):
+    """
+    保存深度图的可视化比较
+    
+    Args:
+        pred_depth (torch.Tensor): 预测的深度图
+        gt_depth (torch.Tensor): 真实的深度图
+        image_idx (int): 样本索引
+        output_dir (str): 保存目录
+        epoch (int, optional): 当前轮次
+        batch_idx (int, optional): 批次索引
+    """
+    # 确保输出目录存在
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # 将张量转换为NumPy数组
+    pred_depth_np = pred_depth.detach().cpu().numpy()
+    gt_depth_np = gt_depth.detach().cpu().numpy()
+    
+    # 创建可视化
+    plt.figure(figsize=(12, 5))
+    
+    # 预测深度图
+    plt.subplot(121)
+    plt.title("MiDaS Predicted Depth")
+    plt.imshow(pred_depth_np, cmap='plasma')
+    plt.colorbar(label='Depth')
+    
+    # 真实深度图
+    plt.subplot(122)
+    plt.title("Ground Truth Depth")
+    plt.imshow(gt_depth_np, cmap='plasma')
+    plt.colorbar(label='Depth')
+    
+    # 创建文件名
+    if epoch is not None and batch_idx is not None:
+        filename = f"depth_vis_e{epoch}_b{batch_idx}_s{image_idx}.png"
+    else:
+        filename = f"depth_vis_sample_{image_idx}.png"
+    
+    # 保存图像
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, filename), dpi=150)
+    plt.close()
 
 def main(config_file):
     """
