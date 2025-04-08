@@ -3,32 +3,32 @@
 # Data settings
 data:
   root: "data/CW2-Dataset/data"
-  num_points: 4096  # Number of points per point cloud
-  num_workers: 4
-  batch_size: 16
-  use_height: false  # Use height as additional feature
+  num_points: 10240  # Number of points per point cloud
+  num_workers: 8
+  batch_size: 8
+  use_height: true  # Use height as additional feature
 
 # Model settings
 model:
   name: "dgcnn"  # Options: "dgcnn", "pointnet2"
   k: 20          # Number of nearest neighbors for DGCNN
-  emb_dims: 1024  # Embedding dimensions
+  emb_dims: 512  # Embedding dimensions
   dropout: 0.5    # Dropout rate
   num_classes: 2  # Binary segmentation: Table vs Background
 
 # Training settings
 training:
-  epochs: 100
-  lr: 1e-4
+  epochs: 200
+  lr: 1e-3
   weight_decay: 1e-5
   lr_decay: 0.7
-  lr_decay_step: 20
+  lr_decay_step: 40
   early_stopping: 15  # Number of epochs with no improvement after which training will be stopped
 
 # Loss settings
 loss:
-  class_weights: [1.0, 100.0]  # Weight more importance to table points due to class imbalance
-  use_weighted_loss: true
+  class_weights: [1.0, 1000.0]  # Weight more importance to table points due to class imbalance
+  use_weighted_loss: false
   loss_type: "combined"        # Options: "ce" (cross entropy), "focal", "dice", "combined"
   focal_gamma: 2.0             # Gamma parameter for focal loss (higher values focus more on hard examples)
   loss_weights: [0.7, 0.3]     # Weights for combined loss [cross_entropy_weight, dice_weight]

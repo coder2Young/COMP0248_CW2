@@ -8,6 +8,13 @@ from collections import defaultdict
 from src.data_utils.dataset import Sun3DBaseDataset, DatasetSplitter
 from src.pipelineC.config import load_config
 
+
+
+class PointCloudSegmentationSubset(data.Subset):
+    def __getattr__(self, attr):
+        return getattr(self.dataset, attr)
+    
+
 class PointCloudSegmentationDataset(Sun3DBaseDataset):
     """
     Dataset class for point cloud segmentation.
@@ -121,28 +128,28 @@ class PointCloudSegmentationDataset(Sun3DBaseDataset):
                     point_labels[i] = binary_mask[v, u]
         
         # Sample points
-        if point_cloud.shape[0] > self.num_points:
-            if self.random_sampling:
-                # Random sampling
-                point_indices = np.random.choice(point_cloud.shape[0], self.num_points, replace=False)
-            else:
-                # Use first n points (for reproducibility in testing)
-                point_indices = np.arange(self.num_points)
+#         if point_cloud.shape[0] > self.num_points:
+#             if self.random_sampling:
+#                 # Random sampling
+#                 point_indices = np.random.choice(point_cloud.shape[0], self.num_points, replace=False)
+#             else:
+#                 # Use first n points (for reproducibility in testing)
+#                 point_indices = np.arange(self.num_points)
             
-            point_cloud = point_cloud[point_indices]
-            point_labels = point_labels[point_indices]
-        elif point_cloud.shape[0] < self.num_points:
-            # Pad with repeated points if we don't have enough
-            if point_cloud.shape[0] == 0:
-                # If no points, create dummy points
-                point_cloud = np.zeros((self.num_points, 3), dtype=np.float32)
-                binary_label = sample.get('binary_label', 0)
-                point_labels = np.full(self.num_points, binary_label, dtype=np.int64)
-            else:
-                # Pad with repeated points
-                point_indices = np.random.choice(point_cloud.shape[0], self.num_points - point_cloud.shape[0], replace=True)
-                point_cloud = np.vstack([point_cloud, point_cloud[point_indices]])
-                point_labels = np.hstack([point_labels, point_labels[point_indices]])
+#             point_cloud = point_cloud[point_indices]
+#             point_labels = point_labels[point_indices]
+#         elif point_cloud.shape[0] < self.num_points:
+#             # Pad with repeated points if we don't have enough
+#             if point_cloud.shape[0] == 0:
+#                 # If no points, create dummy points
+#                 point_cloud = np.zeros((self.num_points, 3), dtype=np.float32)
+#                 binary_label = sample.get('binary_label', 0)
+#                 point_labels = np.full(self.num_points, binary_label, dtype=np.int64)
+#             else:
+#                 # Pad with repeated points
+#                 point_indices = np.random.choice(point_cloud.shape[0], self.num_points - point_cloud.shape[0], replace=True)
+#                 point_cloud = np.vstack([point_cloud, point_cloud[point_indices]])
+#                 point_labels = np.hstack([point_labels, point_labels[point_indices]])
         
         # Extract XYZ coordinates
         xyz = point_cloud[:, :3]
@@ -179,7 +186,9 @@ class PointCloudSegmentationDataset(Sun3DBaseDataset):
             point_features = np.concatenate([xyz_normalized, heights, rgb], axis=1)  # (N, 7)
         else:
             # Combine features: XYZ, RGB
-            point_features = np.concatenate([xyz_normalized, rgb], axis=1)  # (N, 6)
+            point_features = np.concatenate([xyz, rgb], axis=1)  # (N, 6)
+        # point_features = xyz_normalized
+        # point_features = xyz
         
         # Convert to torch tensors
         point_features = torch.tensor(point_features, dtype=torch.float32)
@@ -190,9 +199,14 @@ class PointCloudSegmentationDataset(Sun3DBaseDataset):
             point_features = self.transform(point_features)
         
         # Create the final sample dictionary
+        counts = torch.bincount(point_labels, minlength=2)  # [1, 2]
+        # print(point_features.shape)
         pc_sample = {
             'point_features': point_features,
+            'point_cloud': point_features,
             'point_labels': point_labels,
+            'labels': point_labels,
+            'label_counts': counts,
             'sequence': sample['sequence'],
             'subdir': sample['subdir'],
             'rgb_image': sample.get('rgb_image', None)
@@ -384,7 +398,7 @@ def get_dataloader(config, split='train', transform=None):
             subset_indices = indices[split_idx:]
         
         # Create subset
-        dataset = data.Subset(dataset, subset_indices)
+        dataset = PointCloudSegmentationSubset(dataset, subset_indices)
     
     # Create dataloader
     dataloader = data.DataLoader(

@@ -144,9 +144,11 @@ def depth_to_point_cloud(depth_map, intrinsics, subsample=True, num_points=1024,
         return np.zeros((num_points, 3))
     
     # Extract valid depth values and pixel coordinates
-    z = depth_map[valid_mask]
-    v_valid = v[valid_mask]
-    u_valid = u[valid_mask]
+    z = depth_map.flatten() # [valid_mask]
+    # print(depth_map.shape)
+    # print(depth_map[valid_mask].shape)
+    v_valid = v.flatten() # [valid_mask]
+    u_valid = u.flatten() # [valid_mask]
     
     # Get intrinsics
     fx = intrinsics['fx']

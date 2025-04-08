@@ -23,6 +23,7 @@ from src.pipelineC.config import load_config, save_config
 from src.utils.metrics import compute_segmentation_metrics
 from src.utils.logging import TrainingLogger
 from src.utils.visualization import visualize_point_cloud_segmentation, plot_confusion_matrix
+from src.pipelineC.eval import evaluate
 
 def set_seed(seed):
     """
@@ -207,6 +208,11 @@ class CombinedLoss(nn.Module):
         """
         combined_loss = 0.0
         for i, loss_fn in enumerate(self.losses):
+            if isinstance(loss_fn, nn.CrossEntropyLoss):  # ce
+                batch_size, num_classes, num_points = logits.size()
+                logits = logits.permute(0, 2, 1).contiguous()  # (B, N, C)
+                logits = logits.view(-1, num_classes)  # (B*N, C)
+                targets = targets.view(-1)  # (B*N)
             combined_loss += self.weights[i] * loss_fn(logits, targets)
         return combined_loss
 
@@ -331,10 +337,15 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, logger, e
         # Get data
         inputs = data['point_features'].to(device)
         targets = data['point_labels'].to(device)
+        counts = data['label_counts']
+        
+        class_weight = torch.sum(counts, dim=0)
+        class_weight = torch.max(class_weight) / (class_weight + 1e-9)
+        # print(f"class weight: {class_weight}")
         
         # Transpose input if needed - model expects (B, C, N) but data might be (B, N, C)
-        if inputs.shape[1] == config['data']['num_points']:  # If second dimension is num_points, we need to transpose
-            inputs = inputs.transpose(1, 2)  # (B, N, C) -> (B, C, N)
+        # if inputs.shape[1] == config['data']['num_points']:  # If second dimension is num_points, we need to transpose
+        inputs = inputs.transpose(1, 2)  # (B, N, C) -> (B, C, N)
         
         # Zero gradients
         optimizer.zero_grad()
@@ -343,6 +354,7 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, logger, e
         outputs = model(inputs)
         
         # Calculate loss
+        criterion.class_weights = class_weight
         loss = criterion(outputs, targets)
         
         # Backward pass
@@ -437,6 +449,11 @@ def validate(model, dataloader, criterion, device, epoch, logger, config, visual
             # Get data
             inputs = data['point_features'].to(device)
             targets = data['point_labels'].to(device)
+            counts = data['label_counts']
+        
+            class_weight = torch.sum(counts, dim=0)
+            class_weight = torch.max(class_weight) / (class_weight + 1e-9)
+            # print(f"class weight: {class_weight}")
             
             # Transpose input if needed - model expects (B, C, N) but data might be (B, N, C)
             if inputs.shape[1] == config['data']['num_points']:  # If second dimension is num_points, we need to transpose
@@ -446,6 +463,7 @@ def validate(model, dataloader, criterion, device, epoch, logger, config, visual
             outputs = model(inputs)
             
             # Calculate loss
+            criterion.class_weights = class_weight
             loss = criterion(outputs, targets)
             
             # Update loss
@@ -568,7 +586,14 @@ def main(config_file):
     print(f"Test samples: {len(test_loader.dataset)}")
     
     # Get class weights from dataset if available
-    class_weights = config['loss'].get('class_weights', None)
+    # class_weights = torch.zeros((1, 2))
+    # pbar = tqdm(train_loader, desc=f"[Calculating weights]")
+    # for batch_idx, data in enumerate(pbar):
+    #     counts = data['label_counts']
+    #     class_weights += torch.sum(counts, dim=0)
+    # class_weights = torch.max(class_weights) / (class_weights + 1e-9)
+    # class_weights = config['loss'].get('class_weights', None)
+    # print(f"class weights: {class_weights}")
     
     # Create model
     model = get_model(config)
@@ -579,7 +604,7 @@ def main(config_file):
     focal_gamma = config['loss'].get('focal_gamma', 2.0)
     loss_weights = config['loss'].get('loss_weights', None)
     
-    if config['loss'].get('use_weighted_loss', False) and class_weights:
+    if config['loss'].get('use_weighted_loss', False) and class_weights is not None:
         print(f"Using weighted {loss_type} loss with class weights: {class_weights}")
         criterion = SegmentationLoss(
             class_weights=class_weights,
@@ -712,7 +737,7 @@ def main(config_file):
             early_stopping_counter = 0
         else:
             # Increment early stopping counter
-            early_stopping_counter += 1
+            # early_stopping_counter += 1
             
             # Check if early stopping criteria is met
             if early_stopping_counter >= config['training']['early_stopping']:

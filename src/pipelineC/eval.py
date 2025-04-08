@@ -96,6 +96,9 @@ def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, 
             inputs = data['point_cloud'].to(device)
             targets = data['labels'].to(device)
             
+            # if inputs.shape[1] == config['data']['num_points']:  # If second dimension is num_points, we need to transpose
+            inputs = inputs.transpose(1, 2)  # (B, N, C) -> (B, C, N)
+            
             # Forward pass
             outputs = model(inputs)
             

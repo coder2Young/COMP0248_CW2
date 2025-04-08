@@ -19,6 +19,7 @@ def knn(x, k):
     
     # Find the k nearest neighbors
     idx = pairwise_distance.topk(k=k, dim=-1)[1]
+    # print(idx.shape)
     return idx
 
 def get_graph_feature(x, k=20, idx=None):
@@ -53,8 +54,8 @@ def get_graph_feature(x, k=20, idx=None):
     
     # Concatenate the features from neighbors with the central point
     feature = torch.cat((feature - x, x), dim=3).permute(0, 3, 1, 2).contiguous()
-    
     return feature
+
 
 class DGCNN_Seg(nn.Module):
     """
@@ -82,47 +83,81 @@ class DGCNN_Seg(nn.Module):
         self.input_dim = input_dim
         
         # Edge convolution layers
-        self.bn1 = nn.BatchNorm2d(64)
+        self.bn1 = nn.BatchNorm1d(64)
         self.bn2 = nn.BatchNorm2d(64)
         self.bn3 = nn.BatchNorm2d(64)
         self.bn4 = nn.BatchNorm2d(64)
         self.bn5 = nn.BatchNorm2d(64)
         
         # First conv layer input channels is 2*input_dim because get_graph_feature doubles the features
-        self.conv1 = nn.Sequential(nn.Conv2d(input_dim*2, 64, kernel_size=1, bias=False),
-                                  self.bn1,
-                                  nn.LeakyReLU(negative_slope=0.2))
-        self.conv2 = nn.Sequential(nn.Conv2d(64*2, 64, kernel_size=1, bias=False),
-                                  self.bn2,
-                                  nn.LeakyReLU(negative_slope=0.2))
-        self.conv3 = nn.Sequential(nn.Conv2d(64*2, 64, kernel_size=1, bias=False),
-                                  self.bn3,
-                                  nn.LeakyReLU(negative_slope=0.2))
-        self.conv4 = nn.Sequential(nn.Conv2d(64*2, 64, kernel_size=1, bias=False),
-                                  self.bn4,
-                                  nn.LeakyReLU(negative_slope=0.2))
-        self.conv5 = nn.Sequential(nn.Conv2d(64*2, 64, kernel_size=1, bias=False),
-                                  self.bn5,
-                                  nn.LeakyReLU(negative_slope=0.2))
+        self.conv1 = nn.Sequential(
+            nn.Conv1d(input_dim, 64, kernel_size=1, bias=False),
+            self.bn1,
+            nn.LeakyReLU(negative_slope=0.2),
+            # nn.Conv1d(64, 64, kernel_size=1, bias=False),
+            # self.bn1,
+            # nn.LeakyReLU(negative_slope=0.2),
+            # nn.Conv1d(64, 64, kernel_size=1, bias=False),
+            # self.bn1,
+            # nn.LeakyReLU(negative_slope=0.2),
+        )
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(64*2, 64, kernel_size=1, bias=False),
+            self.bn2,
+            nn.LeakyReLU(negative_slope=0.2),
+            # nn.Conv2d(64, 64, kernel_size=1, bias=False),
+            # self.bn2,
+            # nn.LeakyReLU(negative_slope=0.2),
+            # nn.Conv2d(64, 64, kernel_size=1, bias=False),
+            # self.bn2,
+            # nn.LeakyReLU(negative_slope=0.2),
+        )
+        self.conv3 = nn.Sequential(
+            nn.Conv2d(64*2, 64, kernel_size=1, bias=False),
+            self.bn3,
+            nn.LeakyReLU(negative_slope=0.2),
+            # nn.Conv2d(64, 64, kernel_size=1, bias=False),
+            # self.bn3,
+            # nn.LeakyReLU(negative_slope=0.2),
+            # nn.Conv2d(64, 64, kernel_size=1, bias=False),
+            # self.bn3,
+            # nn.LeakyReLU(negative_slope=0.2),
+        )
+        # self.conv4 = nn.Sequential(
+        #     nn.Conv2d(64*2, 64, kernel_size=1, bias=False),
+        #     self.bn4,
+        #     nn.LeakyReLU(negative_slope=0.2),
+        # )
+        # self.conv5 = nn.Sequential(
+        #     nn.Conv2d(64*2, 64, kernel_size=1, bias=False),
+        #     self.bn5,
+        #     nn.LeakyReLU(negative_slope=0.2),
+        # )
         
         # Global feature embedding
         self.bn6 = nn.BatchNorm1d(emb_dims)
-        self.conv6 = nn.Sequential(nn.Conv1d(64*5, emb_dims, kernel_size=1, bias=False),
-                                  self.bn6,
-                                  nn.LeakyReLU(negative_slope=0.2))
+        self.conv6 = nn.Sequential(
+            nn.Conv1d(64, emb_dims, kernel_size=1, bias=False),
+            self.bn6,
+            nn.LeakyReLU(negative_slope=0.2)
+        )
         
         # Per-point segmentation
         self.bn7 = nn.BatchNorm1d(512)
         self.bn8 = nn.BatchNorm1d(256)
+        self.bn9 = nn.BatchNorm1d(128)
         
-        self.conv7 = nn.Sequential(nn.Conv1d(emb_dims+64*5, 512, kernel_size=1, bias=False),
+        self.conv7 = nn.Sequential(nn.Conv1d(emb_dims+64*3, 512, kernel_size=1, bias=False),
                                   self.bn7,
                                   nn.LeakyReLU(negative_slope=0.2))
         self.conv8 = nn.Sequential(nn.Conv1d(512, 256, kernel_size=1, bias=False),
                                   self.bn8,
                                   nn.LeakyReLU(negative_slope=0.2))
-        self.dp1 = nn.Dropout(p=dropout)
-        self.conv9 = nn.Conv1d(256, num_classes, kernel_size=1, bias=True)
+        self.conv9 = nn.Sequential(nn.Conv1d(256, 128, kernel_size=1, bias=False),
+                                  self.bn9,
+                                  nn.LeakyReLU(negative_slope=0.2))
+        # self.dp1 = nn.Dropout(p=dropout)
+        self.conv10 = nn.Conv1d(128, num_classes, kernel_size=1, bias=True)
         
     def forward(self, x):
         """
@@ -137,9 +172,9 @@ class DGCNN_Seg(nn.Module):
         batch_size, num_dims, num_points = x.size()
         
         # Layer 1: Extract local features with edge convolution
-        x1 = get_graph_feature(x, k=self.k)
-        x1 = self.conv1(x1)
-        x1 = x1.max(dim=-1, keepdim=False)[0]
+        # x1 = get_graph_feature(x, k=self.k)
+        x1 = self.conv1(x)
+        # x1 = x1.max(dim=-1, keepdim=False)[0]
         
         # Layer 2
         x2 = get_graph_feature(x1, k=self.k)
@@ -151,36 +186,35 @@ class DGCNN_Seg(nn.Module):
         x3 = self.conv3(x3)
         x3 = x3.max(dim=-1, keepdim=False)[0]
         
-        # Layer 4
-        x4 = get_graph_feature(x3, k=self.k)
-        x4 = self.conv4(x4)
-        x4 = x4.max(dim=-1, keepdim=False)[0]
+        # # Layer 4
+        # x4 = get_graph_feature(x3, k=self.k)
+        # x4 = self.conv4(x4)
+        # x4 = x4.max(dim=-1, keepdim=False)[0]
         
-        # Layer 5
-        x5 = get_graph_feature(x4, k=self.k)
-        x5 = self.conv5(x5)
-        x5 = x5.max(dim=-1, keepdim=False)[0]
+        # # Layer 5
+        # x5 = get_graph_feature(x4, k=self.k)
+        # x5 = self.conv5(x5)
+        # x5 = x5.max(dim=-1, keepdim=False)[0]
         
         # Concatenate all local features
-        x_cat = torch.cat((x1, x2, x3, x4, x5), dim=1)
+        # x_cat = torch.cat((x1, x2, x3, x4, x5), dim=1)
         
         # Global features
-        x6 = self.conv6(x_cat)
+        x6 = self.conv6(x3)
         x6 = x6.max(dim=-1, keepdim=True)[0]  # (B, emb_dims, 1)
         
         # Expand global features to all points
         x6 = x6.repeat(1, 1, num_points)
         
         # Concatenate global and local features
-        x7 = torch.cat((x6, x_cat), dim=1)
+        x7 = torch.cat((x1, x2, x3, x6), dim=1)
         
         # Final segmentation layers
         x7 = self.conv7(x7)
         x7 = self.conv8(x7)
-        x7 = self.dp1(x7)
+        # x7 = self.dp1(x7)
         x7 = self.conv9(x7)
-        
-        return x7
+        return self.conv10(x7)
         
 class PointNet2_Seg(nn.Module):
     """
