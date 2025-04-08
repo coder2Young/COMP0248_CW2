@@ -227,65 +227,96 @@ def visualize_segmentation_results(rgb_image, depth_map, ground_truth_mask, pred
     plt.tight_layout()
     plt.show()
 
-def visualize_classification_results(rgb_image, ground_truth_label=None, predicted_label=None,
-                                   title='Classification Results', class_names=None, confidence=None, save_path=None, figsize=(15, 5)):
+def visualize_classification_results(vis_data, output_dir, class_names=None):
     """
-    Visualize classification results on an RGB image.
-    
+    Visualizes classification results, including RGB, predicted depth, and optionally GT depth.
+
     Args:
-        rgb_image (numpy.ndarray): RGB image to visualize
-        ground_truth_label (int, optional): Ground truth label
-        predicted_label (int, optional): Predicted label
-        title (str): Title for the plot
-        class_names (list): List of class names, defaults to ['No Table', 'Table'] if None
-        confidence (float): Prediction confidence score (optional)
-        save_path (str, optional): Path to save the visualization
-        figsize (tuple): Figure size (width, height)
+        vis_data (list): List of dictionaries, each containing sample data like
+                         'rgb_tensor', 'pred_depth', 'gt_depth' (can be None), 'target', 'pred'.
+        output_dir (str): Directory to save the visualization images.
+        class_names (list, optional): List of class names. Defaults to ['No Table', 'Table'].
     """
     if class_names is None:
         class_names = ['No Table', 'Table']
-        
-    # Create figure
-    plt.figure(figsize=figsize)
-    
-    # Show RGB image
-    plt.imshow(rgb_image)
-    
-    # Format title with ground truth and prediction information
-    if ground_truth_label is not None and predicted_label is not None:
-        gt_class = class_names[ground_truth_label] if ground_truth_label < len(class_names) else str(ground_truth_label)
-        pred_class = class_names[predicted_label] if predicted_label < len(class_names) else str(predicted_label)
-        
-        # Check if prediction is correct
-        is_correct = ground_truth_label == predicted_label
-        status = "Correct" if is_correct else "Incorrect"
-        status_color = "green" if is_correct else "red"
-        
-        # Add confidence if available
-        conf_text = f", Confidence: {confidence:.2f}" if confidence is not None else ""
-        
-        # Create full title
-        full_title = f"{title}\nGround Truth: {gt_class}, Prediction: {pred_class}{conf_text}\n"
-        plt.title(full_title)
-        
-        # Add a text box showing if the prediction was correct or not
-        plt.figtext(0.5, 0.01, status, ha="center", fontsize=12, 
-                    bbox={"facecolor": status_color, "alpha": 0.5, "pad": 5})
-    else:
-        plt.title(title)
-    
-    # Remove axes
-    plt.axis('off')
-    
-    # Tight layout
-    plt.tight_layout()
-    
-    # Save or display figure
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
-    else:
-        plt.show()
+    os.makedirs(output_dir, exist_ok=True)
+
+    print(f"Generating {len(vis_data)} classification visualizations in {output_dir}...")
+
+    for i, sample in enumerate(vis_data):
+        try:
+            rgb_tensor = sample.get('rgb_tensor')
+            pred_depth_tensor = sample.get('pred_depth')
+            gt_depth_tensor = sample.get('gt_depth') # This can be None or a Tensor
+            target = sample.get('target', -1)
+            pred = sample.get('pred', -1)
+            confidence = sample.get('confidence', -1.0)
+
+            # --- Data Conversion ---
+            # Convert RGB
+            if rgb_tensor is None or not isinstance(rgb_tensor, torch.Tensor):
+                 print(f"Warning: Skipping sample {i}, missing or invalid RGB tensor.")
+                 continue
+            rgb_np = rgb_tensor.numpy().transpose(1, 2, 0)
+            rgb_np = np.clip(rgb_np, 0, 1)
+
+            # Convert Predicted Depth
+            if pred_depth_tensor is None or not isinstance(pred_depth_tensor, torch.Tensor):
+                 print(f"Warning: Skipping sample {i}, missing or invalid predicted depth tensor.")
+                 continue
+            pred_depth_np = pred_depth_tensor.numpy()
+
+            # Convert GT Depth (Handle None)
+            gt_depth_np = None
+            if gt_depth_tensor is not None and isinstance(gt_depth_tensor, torch.Tensor):
+                gt_depth_np = gt_depth_tensor.numpy()
+            # --- End Data Conversion ---
+
+
+            # --- Plotting ---
+            fig, axes = plt.subplots(1, 3, figsize=(18, 6)) # Adjusted size slightly
+            fig.suptitle(f"Classification Vis #{i} - Target: {class_names[target]}, Pred: {class_names[pred]} ({confidence:.2f})")
+
+            # Plot RGB
+            axes[0].imshow(rgb_np)
+            axes[0].set_title("RGB Image")
+            axes[0].axis('off')
+
+            # Plot Predicted Depth
+            im1 = axes[1].imshow(pred_depth_np, cmap='viridis')
+            axes[1].set_title("Predicted Depth")
+            axes[1].axis('off')
+            fig.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
+
+            # Plot Ground Truth Depth (Check for None!)
+            ax2 = axes[2]
+            if gt_depth_np is not None:
+                im2 = ax2.imshow(gt_depth_np, cmap='viridis') # Only plot if not None
+                ax2.set_title("Ground Truth Depth")
+                fig.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
+            else:
+                # Display placeholder text if GT depth is None
+                ax2.text(0.5, 0.5, 'GT Depth N/A', horizontalalignment='center',
+                       verticalalignment='center', transform=ax2.transAxes, fontsize=12, color='gray')
+                ax2.set_title("Ground Truth Depth")
+            ax2.axis('off')
+            # --- End Plotting ---
+
+
+            # Add overall correctness indicator text below plots if needed
+            # ... (optional text)
+
+            # Save the figure
+            filename = f"classification_vis_{sample.get('batch_idx', 'X')}_{sample.get('sample_idx', i)}.png"
+            save_path = os.path.join(output_dir, filename)
+            plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+            plt.savefig(save_path, dpi=100)
+            plt.close(fig)
+
+        except Exception as plot_err:
+            print(f"Warning: Failed to generate visualization for sample {i}. Error: {plot_err}")
+            if 'fig' in locals() and plt.fignum_exists(fig.number): # Close figure if error occurred mid-plot
+                 plt.close(fig)
 
 def plot_confusion_matrix(conf_matrix, class_names, title='Confusion Matrix', 
                         save_path=None, figsize=(8, 6), cmap=plt.cm.Blues):

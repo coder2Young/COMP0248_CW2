@@ -25,7 +25,13 @@ Code/
 1. Create a virtual environment:
 ```bash
 python -m venv venv
-source venv/bin/activate  # On Windows, use: venv\Scripts\activate
+source venv/bin/activate
+```
+
+Or use conda:
+```bash
+conda create -n COMP0248 python=3.10
+conda activate COMP0248
 ```
 
 2. Install dependencies:
@@ -73,3 +79,7 @@ python src/pipelineC/eval.py
 ## Results
 
 Evaluation results, visualization outputs, and model logs are saved in the `results` directory. 
+
+## Further Development
+
+You can change the config.yaml file to try out different models and hyperparameters.

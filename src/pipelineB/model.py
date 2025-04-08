@@ -27,6 +27,10 @@ class DepthEstimationModel:
         else:
             raise ValueError(f"Unknown model type: {model_type}")
         
+        # Print model parameters number with model type name
+        print(f"Model type: {model_type}")
+        print(f"Model parameters: {sum(p.numel() for p in self.model.parameters())}")
+
         # Load appropriate transformation for the model type
         midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
         if model_type == "DPT_Large" or model_type == "DPT_Hybrid":
@@ -61,6 +65,7 @@ class DepthEstimationModel:
             self.model.train()
         else:
             self.model.eval()
+
         return self
     
     def eval(self):

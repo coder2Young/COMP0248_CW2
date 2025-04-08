@@ -11,7 +11,7 @@ def compute_classification_metrics(y_true, y_pred):
         y_pred (numpy.ndarray): Predicted labels
     
     Returns:
-        dict: Dictionary containing classification metrics
+        dict: Dictionary containing classification metrics (with standard Python types)
     """
     # Ensure inputs are numpy arrays
     if isinstance(y_true, torch.Tensor):
@@ -26,24 +26,36 @@ def compute_classification_metrics(y_true, y_pred):
     f1 = f1_score(y_true, y_pred, average='binary', zero_division=0)
     
     # Compute confusion matrix
+    # Ensure labels=[0, 1] to handle cases where only one class is present in the batch/dataset
     conf_matrix = confusion_matrix(y_true, y_pred, labels=[0, 1])
     
     # Extract values from confusion matrix
-    tn, fp, fn, tp = conf_matrix.ravel()
+    # Handle potential shape issues if conf_matrix isn't 2x2 (e.g., only one class predicted/present)
+    if conf_matrix.shape == (2, 2):
+        tn, fp, fn, tp = conf_matrix.ravel()
+    elif conf_matrix.shape == (1, 1): # Only one class present and predicted correctly
+        if np.unique(y_true)[0] == 0: # Only negatives
+            tn, fp, fn, tp = conf_matrix.item(), 0, 0, 0
+        else: # Only positives
+            tn, fp, fn, tp = 0, 0, 0, conf_matrix.item()
+    else: # Should not happen with labels=[0, 1], but handle defensively
+        tn, fp, fn, tp = 0, 0, 0, 0
+        print(f"Warning: Unexpected confusion matrix shape: {conf_matrix.shape}")
     
     # Compute specificity (true negative rate)
     specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
     
+    # Return dictionary with standard Python types for JSON serialization
     return {
-        'accuracy': accuracy,
-        'precision': precision,
-        'recall': recall,
-        'f1_score': f1,
-        'specificity': specificity,
-        'true_positives': tp,
-        'false_positives': fp,
-        'true_negatives': tn,
-        'false_negatives': fn
+        'accuracy': float(accuracy),
+        'precision': float(precision),
+        'recall': float(recall),
+        'f1_score': float(f1),
+        'specificity': float(specificity),
+        'true_positives': int(tp),  # Convert to int
+        'false_positives': int(fp), # Convert to int
+        'true_negatives': int(tn),  # Convert to int
+        'false_negatives': int(fn)  # Convert to int
     }
 
 def compute_segmentation_metrics(y_true, y_pred, num_classes=2):
