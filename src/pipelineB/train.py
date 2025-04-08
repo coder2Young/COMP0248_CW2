@@ -399,12 +399,13 @@ def main(config_file):
     freeze_depth = config['model'].get('freeze_depth_estimator', True)
     depth_loss_weight = config['training'].get('depth_loss_weight', 0.0)
     logger.logger.info(f"Depth estimator frozen: {freeze_depth}")
-    logger.logger.info(f"Depth loss weight: {depth_loss_weight}")
+    if not freeze_depth:
+        logger.logger.info(f"Depth loss weight: {depth_loss_weight}")
     
     # Move model to device
     model = model.to(device)
     
-    # Define loss function, optimizer and scheduler
+    # Define loss function and optimizer
     criterion = nn.CrossEntropyLoss()
     
     optimizer = optim.AdamW(
@@ -413,11 +414,41 @@ def main(config_file):
         weight_decay=float(config['training']['weight_decay'])
     )
     
-    scheduler = optim.lr_scheduler.StepLR(
-        optimizer,
-        step_size=int(config['training']['lr_decay_step']),
-        gamma=float(config['training']['lr_decay'])
-    )
+    # --- Initialize LR Scheduler based on config ---
+    scheduler_type = config['training'].get('scheduler_type', 'cosine') # Default to cosine
+    logger.logger.info(f"Using LR scheduler: {scheduler_type}")
+    
+    if scheduler_type == 'cosine':
+        # Ensure T_max is at least 1, default to epochs if not specified or invalid
+        T_max = config['training'].get('cosine_T_max', config['training']['epochs'])
+        if not isinstance(T_max, int) or T_max < 1:
+            T_max = config['training']['epochs']
+            logger.logger.warning(f"Invalid cosine_T_max, defaulting to epochs: {T_max}")
+        
+        eta_min = float(config['training'].get('cosine_eta_min', 1e-6)) # Default eta_min
+        
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=T_max,
+            eta_min=eta_min
+        )
+        logger.logger.info(f"  CosineAnnealingLR params: T_max={T_max}, eta_min={eta_min}")
+    
+    elif scheduler_type == 'step':
+        step_size = int(config['training']['step_lr_decay_step'])
+        gamma = float(config['training']['step_lr_gamma'])
+        scheduler = optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=step_size,
+            gamma=gamma
+        )
+        logger.logger.info(f"  StepLR params: step_size={step_size}, gamma={gamma}")
+    
+    else:
+        logger.logger.error(f"Unknown scheduler type: {scheduler_type}. Using no scheduler.")
+        # Optionally, create a dummy scheduler or raise an error
+        # For now, we'll proceed without a scheduler if type is unknown
+        scheduler = None # Or raise ValueError(f"Unknown scheduler type: {scheduler_type}")
     
     # Training loop
     best_val_loss = float('inf')
@@ -448,13 +479,16 @@ def main(config_file):
             logger=logger
         )
         
-        # Update learning rate
-        scheduler.step()
+        # Update learning rate (only if scheduler is defined)
+        current_lr = optimizer.param_groups[0]['lr'] # Get LR before step
+        if scheduler:
+            scheduler.step()
+            current_lr = scheduler.get_last_lr()[0] # Get LR after step
         
         # Print train and val loss on the same line for comparison
         logger.logger.info(f"Epoch {epoch}/{config['training']['epochs']} - "
                      f"Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}, "
-                     f"LR: {scheduler.get_last_lr()[0]:.6f}")
+                     f"LR: {current_lr:.6f}") # Use current_lr
         
         # Log epoch results
         logger.log_epoch(
@@ -463,7 +497,7 @@ def main(config_file):
             val_loss=val_loss,
             train_metrics=train_metrics,
             val_metrics=val_metrics,
-            lr=scheduler.get_last_lr()[0]
+            lr=current_lr # Log the potentially updated LR
         )
         
         # Save the model checkpoint (latest model)
@@ -472,7 +506,8 @@ def main(config_file):
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-            'scheduler_state_dict': scheduler.state_dict(),
+            # Save scheduler state dict only if it exists
+            'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
             'train_loss': train_loss,
             'val_loss': val_loss,
             'train_metrics': train_metrics,
@@ -492,7 +527,8 @@ def main(config_file):
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
+                # Save scheduler state dict only if it exists
+                'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
                 'train_loss': train_loss,
                 'val_loss': val_loss,
                 'train_metrics': train_metrics,
@@ -511,7 +547,8 @@ def main(config_file):
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
+                # Save scheduler state dict only if it exists
+                'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
                 'train_loss': train_loss,
                 'val_loss': val_loss,
                 'train_metrics': train_metrics,

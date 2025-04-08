@@ -20,13 +20,25 @@ model:
 # Training settings
 training:
   epochs: 100
-  lr: 1e-5
+  lr: 1e-4
   weight_decay: 1e-3
-  lr_decay: 0.7
-  lr_decay_step: 10
   early_stopping: 100  # Number of epochs with no improvement after which training will be stopped
-  
-  # Depth estimation loss weights
+
+  # --- Scheduler Settings ---
+  scheduler_type: "cosine" # Options: "cosine", "step"
+
+  # StepLR settings (used if scheduler_type is "step")
+  step_lr_decay_step: 5
+  step_lr_gamma: 0.6
+
+  # CosineAnnealingLR settings (used if scheduler_type is "cosine")
+  # T_max: Maximum number of iterations (usually set to total epochs for one cycle)
+  cosine_T_max: 100 # Defaulting to epochs, adjust if needed
+  # eta_min: Minimum learning rate
+  cosine_eta_min: 1e-6 # A small fraction of the initial LR
+
+  # --- Depth Estimation Loss Weights ---
+  # (Only relevant if freeze_depth_estimator is false)
   depth_loss_weight: 1.0  # Set to 0.0 to disable depth loss when frozen
   si_weight: 1.0  # Scale-invariant MSE loss weight
   edge_weight: 0.1  # Edge-aware gradient loss weight
