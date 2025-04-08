@@ -3,7 +3,7 @@
 # Data settings
 data:
   root: "data/CW2-Dataset/data"
-  image_size: 384  # Input image size for the model
+  image_size: 480  # Input image size for the model
   num_workers: 4
   train_batch_size: 32  # Batch size for training
   eval_batch_size: 4    # Batch size for evaluation/testing
@@ -11,7 +11,7 @@ data:
 
 # Model settings
 model:
-  name: "resnet34"  # Base CNN architecture
+  name: "resnet18"  # Base CNN architecture
   pretrained: true  # Use pretrained weights
   num_classes: 2    # Binary classification: Table / No Table
   depth_model_type: "DPT_Hybrid"  # MiDaS depth estimation model type
@@ -19,11 +19,11 @@ model:
 
 # Training settings
 training:
-  epochs: 300
-  lr: 5e-4
-  weight_decay: 5e-5
-  lr_decay: 0.9
-  lr_decay_step: 5
+  epochs: 100
+  lr: 1e-5
+  weight_decay: 1e-3
+  lr_decay: 0.7
+  lr_decay_step: 10
   early_stopping: 100  # Number of epochs with no improvement after which training will be stopped
   
   # Depth estimation loss weights

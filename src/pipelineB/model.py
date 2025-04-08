@@ -158,7 +158,11 @@ class DepthClassifier(nn.Module):
         Returns:
             torch.Tensor: Logits of shape (B, num_classes)
         """
-        return self.base_model(x)
+        pred = self.base_model(x)
+        
+        # # Apply sigmoid to get probabilities
+        # pred = torch.sigmoid(pred)
+        return pred
 
 class MonocularDepthClassifier(nn.Module):
     """

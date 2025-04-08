@@ -57,7 +57,7 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, logger, e
         tuple: (epoch_loss, epoch_metrics)
     """
     # Enable anomaly detection to pinpoint the in-place operation issue
-    torch.autograd.set_detect_anomaly(True)
+    # torch.autograd.set_detect_anomaly(True)
     
     model.train()
     epoch_loss = 0.0
@@ -87,14 +87,14 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, logger, e
             
             # Get ground truth depth if available and depth loss is enabled
             gt_depth = None
-            if depth_loss_weight > 0 and 'gt_depth' in data and data['gt_depth'] is not None:
+            if not model.freeze_depth_estimator and depth_loss_weight > 0 and 'gt_depth' in data and data['gt_depth'] is not None:
                 gt_depth = data['gt_depth'].to(device)
             
             # Zero the parameter gradients
             optimizer.zero_grad()
             
             # Forward pass - get depth maps only if needed for depth loss
-            if gt_depth is not None and depth_loss_fn is not None:
+            if not model.freeze_depth_estimator and gt_depth is not None and depth_loss_fn is not None:
                 outputs, pred_depth = model(inputs, return_depth=True)
                 
                 # Compute classification loss
@@ -407,14 +407,12 @@ def main(config_file):
     # Define loss function, optimizer and scheduler
     criterion = nn.CrossEntropyLoss()
     
-    # Create optimizer (Adam only)
-    optimizer = optim.Adam(
+    optimizer = optim.AdamW(
         model.parameters(),
         lr=float(config['training']['lr']),
         weight_decay=float(config['training']['weight_decay'])
     )
     
-    # Create scheduler (StepLR only)
     scheduler = optim.lr_scheduler.StepLR(
         optimizer,
         step_size=int(config['training']['lr_decay_step']),
