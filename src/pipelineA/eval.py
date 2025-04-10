@@ -257,13 +257,8 @@ def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, 
                 
                 # Visualize RGB image with classification results
                 visualize_classification_results(
-                    rgb_image=rgb_image,
-                    ground_truth_label=sample['target'],
-                    predicted_label=sample['pred'],
-                    title=f'Sample {i} - {sample["sequence"]}/{sample["subdir"]}',
-                    class_names=class_names,
-                    confidence=sample['confidence'],
-                    save_path=rgb_vis_file
+                    vis_data,
+                    output_dir=rgb_vis_file,
                 )
                 
                 logger.info(f"Saved RGB visualization to {rgb_vis_file}")
@@ -352,7 +347,6 @@ def main(args):
         criterion=criterion,
         device=device,
         output_dir=output_dir,
-        visualize=args.visualize,
         num_vis_samples=args.num_vis_samples
     )
     
@@ -420,9 +414,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Evaluate Pipeline A: Point Cloud Classification')
     parser.add_argument('--config', type=str, default='src/pipelineA/config.yaml', help='Path to configuration file')
     parser.add_argument('--checkpoint', type=str, default=None, help='Path to model checkpoint')
-    parser.add_argument('--visualize', action='store_true', help='Visualize results')
     parser.add_argument('--num_vis_samples', type=int, default=20, help='Number of samples to visualize')
-    parser.add_argument('--eval_realsense', action='store_true', help='Evaluate on RealSense dataset')
+    parser.add_argument('--eval_realsense', default=True, action='store_true', help='Evaluate on RealSense dataset')
+    parser.add_argument('--visualize', default=True, action='store_true', help='Visualize results')
     args = parser.parse_args()
     
     main(args) 

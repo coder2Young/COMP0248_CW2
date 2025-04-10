@@ -107,3 +107,5 @@ Evaluation results, visualization outputs, and model logs are saved in the `resu
 ## Further Development
 
 You can change the config.yaml file to try out different models and hyperparameters.
+
+If the CUDA memory is not enough, you can try to reduce the batch size in the config.yaml file.
