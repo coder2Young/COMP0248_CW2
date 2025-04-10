@@ -57,8 +57,8 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, logger, e
         tuple: (epoch_loss, epoch_metrics)
     """
     # Enable anomaly detection to pinpoint the in-place operation issue
-    torch.autograd.set_detect_anomaly(True)
-    
+    # torch.autograd.set_detect_anomaly(True)
+
     model.train()
     epoch_loss = 0.0
     all_preds = []
@@ -87,14 +87,14 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, logger, e
             
             # Get ground truth depth if available and depth loss is enabled
             gt_depth = None
-            if depth_loss_weight > 0 and 'gt_depth' in data and data['gt_depth'] is not None:
+            if not model.freeze_depth_estimator and depth_loss_weight > 0 and 'gt_depth' in data and data['gt_depth'] is not None:
                 gt_depth = data['gt_depth'].to(device)
             
             # Zero the parameter gradients
             optimizer.zero_grad()
             
             # Forward pass - get depth maps only if needed for depth loss
-            if gt_depth is not None and depth_loss_fn is not None:
+            if not model.freeze_depth_estimator and gt_depth is not None and depth_loss_fn is not None:
                 outputs, pred_depth = model(inputs, return_depth=True)
                 
                 # Compute classification loss
@@ -303,7 +303,7 @@ def validate(model, dataloader, criterion, device, epoch, logger):
 def save_depth_visualization(pred_depth, gt_depth, image_idx, output_dir, epoch=None, batch_idx=None):
     """
     保存深度图的可视化比较
-    
+
     Args:
         pred_depth (torch.Tensor): 预测的深度图
         gt_depth (torch.Tensor): 真实的深度图
@@ -314,32 +314,32 @@ def save_depth_visualization(pred_depth, gt_depth, image_idx, output_dir, epoch=
     """
     # 确保输出目录存在
     os.makedirs(output_dir, exist_ok=True)
-    
+
     # 将张量转换为NumPy数组
     pred_depth_np = pred_depth.detach().cpu().numpy()
     gt_depth_np = gt_depth.detach().cpu().numpy()
-    
+
     # 创建可视化
     plt.figure(figsize=(12, 5))
-    
+
     # 预测深度图
     plt.subplot(121)
     plt.title("MiDaS Predicted Depth")
     plt.imshow(pred_depth_np, cmap='plasma')
     plt.colorbar(label='Depth')
-    
+
     # 真实深度图
     plt.subplot(122)
     plt.title("Ground Truth Depth")
     plt.imshow(gt_depth_np, cmap='plasma')
     plt.colorbar(label='Depth')
-    
+
     # 创建文件名
     if epoch is not None and batch_idx is not None:
         filename = f"depth_vis_e{epoch}_b{batch_idx}_s{image_idx}.png"
     else:
         filename = f"depth_vis_sample_{image_idx}.png"
-    
+
     # 保存图像
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, filename), dpi=150)
@@ -399,27 +399,56 @@ def main(config_file):
     freeze_depth = config['model'].get('freeze_depth_estimator', True)
     depth_loss_weight = config['training'].get('depth_loss_weight', 0.0)
     logger.logger.info(f"Depth estimator frozen: {freeze_depth}")
-    logger.logger.info(f"Depth loss weight: {depth_loss_weight}")
+    if not freeze_depth:
+        logger.logger.info(f"Depth loss weight: {depth_loss_weight}")
     
     # Move model to device
     model = model.to(device)
     
-    # Define loss function, optimizer and scheduler
+    # Define loss function and optimizer
     criterion = nn.CrossEntropyLoss()
     
-    # Create optimizer (Adam only)
-    optimizer = optim.Adam(
+    optimizer = optim.AdamW(
         model.parameters(),
         lr=float(config['training']['lr']),
         weight_decay=float(config['training']['weight_decay'])
     )
     
-    # Create scheduler (StepLR only)
-    scheduler = optim.lr_scheduler.StepLR(
-        optimizer,
-        step_size=int(config['training']['lr_decay_step']),
-        gamma=float(config['training']['lr_decay'])
-    )
+    # --- Initialize LR Scheduler based on config ---
+    scheduler_type = config['training'].get('scheduler_type', 'cosine') # Default to cosine
+    logger.logger.info(f"Using LR scheduler: {scheduler_type}")
+
+    if scheduler_type == 'cosine':
+        # Ensure T_max is at least 1, default to epochs if not specified or invalid
+        T_max = config['training'].get('cosine_T_max', config['training']['epochs'])
+        if not isinstance(T_max, int) or T_max < 1:
+            T_max = config['training']['epochs']
+            logger.logger.warning(f"Invalid cosine_T_max, defaulting to epochs: {T_max}")
+
+        eta_min = float(config['training'].get('cosine_eta_min', 1e-6)) # Default eta_min
+
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=T_max,
+            eta_min=eta_min
+        )
+        logger.logger.info(f"  CosineAnnealingLR params: T_max={T_max}, eta_min={eta_min}")
+
+    elif scheduler_type == 'step':
+        step_size = int(config['training']['step_lr_decay_step'])
+        gamma = float(config['training']['step_lr_gamma'])
+        scheduler = optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=step_size,
+            gamma=gamma
+        )
+        logger.logger.info(f"  StepLR params: step_size={step_size}, gamma={gamma}")
+
+    else:
+        logger.logger.error(f"Unknown scheduler type: {scheduler_type}. Using no scheduler.")
+        # Optionally, create a dummy scheduler or raise an error
+        # For now, we'll proceed without a scheduler if type is unknown
+        scheduler = None # Or raise ValueError(f"Unknown scheduler type: {scheduler_type}")
     
     # Training loop
     best_val_loss = float('inf')
@@ -450,13 +479,16 @@ def main(config_file):
             logger=logger
         )
         
-        # Update learning rate
-        scheduler.step()
+        # Update learning rate (only if scheduler is defined)
+        current_lr = optimizer.param_groups[0]['lr'] # Get LR before step
+        if scheduler:
+            scheduler.step()
+            current_lr = scheduler.get_last_lr()[0] # Get LR after step
         
         # Print train and val loss on the same line for comparison
         logger.logger.info(f"Epoch {epoch}/{config['training']['epochs']} - "
                      f"Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}, "
-                     f"LR: {scheduler.get_last_lr()[0]:.6f}")
+                     f"LR: {current_lr:.6f}") # Use current_lr
         
         # Log epoch results
         logger.log_epoch(
@@ -465,7 +497,7 @@ def main(config_file):
             val_loss=val_loss,
             train_metrics=train_metrics,
             val_metrics=val_metrics,
-            lr=scheduler.get_last_lr()[0]
+            lr=current_lr # Log the potentially updated LR
         )
         
         # Save the model checkpoint (latest model)
@@ -474,7 +506,8 @@ def main(config_file):
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-            'scheduler_state_dict': scheduler.state_dict(),
+            # Save scheduler state dict only if it exists
+            'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
             'train_loss': train_loss,
             'val_loss': val_loss,
             'train_metrics': train_metrics,
@@ -494,7 +527,8 @@ def main(config_file):
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
+                # Save scheduler state dict only if it exists
+                'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
                 'train_loss': train_loss,
                 'val_loss': val_loss,
                 'train_metrics': train_metrics,
@@ -513,7 +547,8 @@ def main(config_file):
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
+                # Save scheduler state dict only if it exists
+                'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
                 'train_loss': train_loss,
                 'val_loss': val_loss,
                 'train_metrics': train_metrics,

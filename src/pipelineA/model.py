@@ -3,6 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
+# Model implementation based on:
+# https://github.com/antao97/dgcnn.pytorch/blob/master/model.py
+# Author: Antonio Barbalace
+
 def knn(x, k):
     """
     K-Nearest Neighbors for point clouds.

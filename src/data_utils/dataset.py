@@ -92,6 +92,21 @@ class Sun3DBaseDataset(Dataset):
                 if os.path.exists(intrinsics_file):
                     intrinsics = read_intrinsics(intrinsics_file)
                 
+                # Read annotations if available
+                annotations = {}
+                labels_file = os.path.join(labels_dir, 'tabletop_labels.dat')
+                
+                # Check if sequence is in all_negative_sequences list or if labels file exists
+                if sequence in self.all_negative_sequences:
+                    # For sequences known to be all negative, use empty annotations
+                    #print(f"Sequence {sequence} is known to have all negative samples (no tables)")
+                    annotations = {}  # Empty annotations for all images
+                elif os.path.exists(labels_file):
+                    annotations = read_and_parse_polygon_labels(labels_file)
+
+                # Count images with table annotations but don't print
+                subdir_table_count = sum(1 for polygons in annotations.values() if polygons)
+                sequence_table_count += subdir_table_count
                 if self.predict is False:
                     # Read annotations if available
                     annotations = {}
@@ -108,12 +123,12 @@ class Sun3DBaseDataset(Dataset):
                     # Count images with table annotations but don't print
                     subdir_table_count = sum(1 for polygons in annotations.values() if polygons)
                     sequence_table_count += subdir_table_count
-                
+
                 # Get all RGB images
                 rgb_files = sorted(glob.glob(os.path.join(image_dir, '*.jpg')))
                 if len(rgb_files) == 0:
                     rgb_files = sorted(glob.glob(os.path.join(image_dir, '*.png')))
-                
+
                 # Get all depth maps
                 depth_files = sorted(glob.glob(os.path.join(depth_dir, '*.png')))
                 
@@ -135,6 +150,11 @@ class Sun3DBaseDataset(Dataset):
                     # Get image filename without path
                     rgb_filename = os.path.basename(rgb_file).split('.')[0]
                     
+                    # Check if annotations exist for this image
+                    # For all_negative_sequences, this will always be an empty list
+                    image_annotations = annotations.get(rgb_filename, [])
+                    has_table = len(image_annotations) > 0
+
                     if self.predict is False:
                         # Check if annotations exist for this image
                         # For all_negative_sequences, this will always be an empty list
@@ -143,7 +163,7 @@ class Sun3DBaseDataset(Dataset):
                     else:
                         image_annotations = []
                         has_table = False
-                   
+
                     # Add the pair to the list
                     data_pair = {
                         'rgb_file': rgb_file,
@@ -396,11 +416,11 @@ class DatasetSplitter:
             tuple: (train_sequences, test_sequences)
         """
         # Define train and test sequences as specified
-        
+
         if predict is False:
             train_sequences = [
                 'mit_32_d507',
-                'mit_76_459', 
+                'mit_76_459',
                 'mit_76_studyroom',
                 'mit_gym_z_squash',
                 'mit_lab_hj'

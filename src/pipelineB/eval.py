@@ -284,13 +284,17 @@ def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, 
     
     # Create directories for outputs
     os.makedirs(output_dir, exist_ok=True)
+    vis_dir = None # Initialize vis_dir
     if visualize:
         vis_dir = os.path.join(output_dir, 'visualizations')
         os.makedirs(vis_dir, exist_ok=True)
-    
-    # Sample data for visualization
+        logger.info(f"Saving visualizations to: {vis_dir}")
+
+    # Sample data for classification visualization (existing logic)
     vis_data = []
-    
+    # Counter for saved depth comparison images
+    saved_depth_vis_count = 0
+
     logger.info("Starting evaluation...")
     
     with torch.no_grad():
@@ -310,7 +314,7 @@ def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, 
             file_paths = data.get('file_path', ['unknown'] * len(inputs))
             
             # Forward pass with depth maps
-            outputs, pred_depth = model(inputs, return_depth=True)
+            outputs, pred_depth = model(inputs, return_depth=True) # pred_depth is [B, H, W]
             loss = criterion(outputs, targets)
             
             # Update metrics
@@ -324,30 +328,80 @@ def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, 
             all_preds.extend(preds.cpu().numpy())
             all_targets.extend(targets.cpu().numpy())
             
-            # Evaluate depth estimation if ground truth is available
+            # Evaluate depth estimation and potentially save visualizations
             if gt_depth is not None:
-                for i in range(len(inputs)):
-                    sample_gt_depth = gt_depth[i]
-                    sample_pred_depth = pred_depth[i]
+                for i in range(len(inputs)): # Iterate through samples in the batch
+                    sample_gt_depth = gt_depth[i]       # [H, W]
+                    sample_pred_depth = pred_depth[i]   # [H, W]
+                    sample_rgb_tensor = inputs[i]       # [C, H, W]
                     
                     # Skip samples with no valid depth
-                    if torch.sum(sample_gt_depth > 0) < 100:  # Require at least 100 valid pixels
-                        continue
-                    
-                    # Compute depth metrics
-                    metrics = compute_depth_metrics(sample_pred_depth, sample_gt_depth)
-                    
-                    # Skip samples with invalid metrics
-                    if any(np.isnan(list(metrics.values()))):
-                        continue
-                    
-                    # Accumulate metrics
-                    for k, v in metrics.items():
-                        depth_errors[k].append(v)
-                    
-                    valid_depth_samples += 1
-            
-            # Store detailed sample info for debugging
+                    if torch.sum(sample_gt_depth > 0) < 100:
+                        metrics_valid = False
+                    else:
+                        metrics = compute_depth_metrics(sample_pred_depth, sample_gt_depth)
+                        # Skip samples with invalid metrics
+                        if any(np.isnan(list(metrics.values()))):
+                            metrics_valid = False
+                        else:
+                            metrics_valid = True
+                            # Accumulate metrics
+                            for k, v in metrics.items():
+                                depth_errors[k].append(v)
+                            valid_depth_samples += 1
+
+                    # --- Save Depth Visualization ---
+                    # Check if visualization is enabled, we haven't saved enough yet,
+                    # and GT depth exists for this sample.
+                    if visualize and saved_depth_vis_count < num_vis_samples and sample_gt_depth is not None:
+                        try:
+                            # Convert tensors to NumPy arrays for plotting
+                            pred_depth_np = sample_pred_depth.detach().cpu().numpy()
+                            gt_depth_np = sample_gt_depth.detach().cpu().numpy()
+                            # Convert RGB tensor: [C, H, W] -> [H, W, C]
+                            rgb_np = sample_rgb_tensor.detach().cpu().numpy().transpose(1, 2, 0)
+                            # Clamp RGB values to [0, 1] just in case they are slightly outside
+                            # (e.g., due to float precision or if normalization wasn't just ToTensor)
+                            rgb_np = np.clip(rgb_np, 0, 1)
+
+                            # Create the plot with 3 subplots
+                            fig, axes = plt.subplots(1, 3, figsize=(18, 5)) # Increased figsize
+                            fig.suptitle(f"RGB + Depth Comparison - Batch {batch_idx}, Sample {i}")
+
+                            # Plot RGB Image
+                            ax0 = axes[0]
+                            ax0.imshow(rgb_np)
+                            ax0.set_title("RGB Image")
+                            ax0.axis('off')
+
+                            # Plot Predicted Depth
+                            ax1 = axes[1]
+                            im1 = ax1.imshow(pred_depth_np, cmap='viridis')
+                            ax1.set_title("Predicted Depth")
+                            ax1.axis('off')
+                            fig.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
+
+                            # Plot Ground Truth Depth
+                            ax2 = axes[2]
+                            im2 = ax2.imshow(gt_depth_np, cmap='viridis')
+                            ax2.set_title("Ground Truth Depth")
+                            ax2.axis('off')
+                            fig.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
+
+                            # Construct filename and save
+                            vis_filename = f"rgb_depth_comparison_b{batch_idx}_s{i}.png" # Updated filename prefix
+                            vis_filepath = os.path.join(vis_dir, vis_filename)
+                            plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust layout
+                            plt.savefig(vis_filepath, dpi=100)
+                            plt.close(fig) # Close the figure to free memory
+
+                            saved_depth_vis_count += 1 # Increment the counter
+
+                        except Exception as e:
+                            logger.warning(f"Could not save RGB+depth visualization for batch {batch_idx}, sample {i}: {e}")
+                    # --- End Save Depth Visualization ---
+
+            # Store detailed sample info for debugging (existing logic)
             for i in range(len(inputs)):
                 sample_info.append({
                     'batch_idx': batch_idx,
@@ -360,16 +414,17 @@ def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, 
                     'confidence': probabilities[i][preds[i]].cpu().item()
                 })
             
-            # Store some samples for visualization
+            # Store some samples for classification visualization (existing logic)
             if visualize and len(vis_data) < num_vis_samples:
                 for i in range(min(len(inputs), num_vis_samples - len(vis_data))):
                     # Store sample for visualization
+                    # gt_depth can be None if not available in the batch
                     sample_gt_depth = gt_depth[i].cpu() if gt_depth is not None else None
-                    
+
                     vis_data.append({
                         'rgb_tensor': inputs[i].cpu(),
                         'pred_depth': pred_depth[i].cpu(),
-                        'gt_depth': sample_gt_depth,
+                        'gt_depth': sample_gt_depth, # <--- This can be None
                         'target': targets[i].cpu().item(),
                         'pred': preds[i].cpu().item(),
                         'confidence': probabilities[i][preds[i]].cpu().item(),
@@ -397,114 +452,57 @@ def evaluate(model, dataloader, criterion, device, output_dir, visualize=False, 
                 depth_metrics[k] = float(np.mean(v))
             else:
                 depth_metrics[k] = float('nan')
-    
-    # Log depth evaluation results
+    else: # Handle case where no valid depth samples were found at all
+         depth_metrics = {k: float('nan') for k in depth_errors.keys()}
+
+    # Log results
+    logger.info(f"Test Loss: {test_loss:.4f}")
+    logger.info(f"Classification Metrics: {json.dumps(test_metrics, indent=4)}")
     if depth_metrics:
-        logger.info("===== Depth Estimation Metrics =====")
-        logger.info(f"Valid depth samples: {valid_depth_samples}")
-        logger.info(f"RMSE:  {depth_metrics.get('rmse', float('nan')):.4f} meters")
-        logger.info(f"MAE:   {depth_metrics.get('mae', float('nan')):.4f} meters")
-        logger.info(f"REL:   {depth_metrics.get('rel', float('nan')):.4f}")
-        logger.info(f"δ1:    {depth_metrics.get('a1', float('nan')):.4f} (% under 1.25)")
-        logger.info(f"δ2:    {depth_metrics.get('a2', float('nan')):.4f} (% under 1.25²)")
-        logger.info(f"δ3:    {depth_metrics.get('a3', float('nan')):.4f} (% under 1.25³)")
-    else:
-        logger.info("No valid depth samples for evaluation.")
-    
-    # Log label distribution
-    target_counts = np.bincount(np.array(all_targets), minlength=2)
-    pred_counts = np.bincount(np.array(all_preds), minlength=2)
-    
-    logger.info("===== Label Distribution Statistics =====")
-    logger.info(f"Ground Truth: No Table (0): {target_counts[0]}, Table (1): {target_counts[1]}")
-    logger.info(f"Predictions: No Table (0): {pred_counts[0]}, Table (1): {pred_counts[1]}")
-    
-    # Save detailed sample info to CSV
-    sample_info_file = os.path.join(output_dir, 'sample_predictions.csv')
-    with open(sample_info_file, 'w') as f:
-        f.write("batch_idx,sample_idx,sequence,subdir,file_path,target,prediction,confidence\n")
-        for sample in sample_info:
-            f.write(f"{sample['batch_idx']},{sample['sample_idx']},{sample['sequence']},"
-                    f"{sample['subdir']},{sample['file_path']},{sample['target']},"
-                    f"{sample['prediction']},{sample['confidence']:.4f}\n")
-    
-    # Print first 20 predictions for manual verification
-    logger.info("===== First 20 Sample Predictions =====")
-    logger.info("Idx\tSequence\tSubdir\tGround Truth\tPrediction\tConfidence")
-    for i, sample in enumerate(sample_info[:20]):
-        logger.info(f"{i}\t{sample['sequence']}\t{sample['subdir']}\t{sample['target']}\t{sample['prediction']}\t{sample['confidence']:.4f}")
-    
-    # Print metrics
-    logger.info("===== Classification Metrics =====")
-    logger.info(f"Test Loss:       {test_loss:.6f}")
-    logger.info(f"Test Accuracy:   {test_metrics['accuracy']:.4f}")
-    logger.info(f"Test Precision:  {test_metrics['precision']:.4f}")
-    logger.info(f"Test Recall:     {test_metrics['recall']:.4f}")
-    logger.info(f"Test F1 Score:   {test_metrics['f1_score']:.4f}")
-    logger.info(f"Test Specificity: {test_metrics['specificity']:.4f}")
-    
-    # Print confusion matrix for better visualization
-    cm = confusion_matrix(all_targets, all_preds)
-    logger.info("===== Confusion Matrix =====")
-    logger.info("GT\\Pred\tNo Table(0)\tTable(1)")
-    logger.info(f"No Table(0)\t{cm[0][0]}\t\t{cm[0][1]}")
-    logger.info(f"Table(1)\t{cm[1][0]}\t\t{cm[1][1]}")
-    
-    # Convert NumPy types to native Python types for JSON serialization
-    serializable_metrics = {}
-    for key, value in test_metrics.items():
-        if isinstance(value, np.integer):
-            serializable_metrics[key] = int(value)
-        elif isinstance(value, np.floating):
-            serializable_metrics[key] = float(value)
-        elif isinstance(value, np.ndarray):
-            serializable_metrics[key] = value.tolist()
-        else:
-            serializable_metrics[key] = value
-    
-    # Add depth metrics to serializable metrics
-    serializable_metrics['depth'] = {k: float(v) if not np.isnan(v) else None for k, v in depth_metrics.items()}
-    
-    # Save metrics to JSON file
-    metrics_file = os.path.join(output_dir, 'metrics.json')
-    with open(metrics_file, 'w') as f:
-        json.dump({
-            'loss': float(test_loss),
-            **serializable_metrics
-        }, f, indent=4)
-    
-    # Update visualization function to include ground truth depth
-    if visualize:
-        logger.info(f"Visualizing {len(vis_data)} samples with RGB images, predicted depths, and ground truth depths...")
-        for i, sample in enumerate(vis_data):
-            # Get original RGB image
-            rgb_image = load_rgb_image(
-                sequence=sample['sequence'], 
-                subdir=sample['subdir'],
-                file_path=sample['file_path'],
-                data_root=dataloader.dataset.dataset.data_root 
-                    if hasattr(dataloader.dataset, 'dataset') else 'data/CW2-Dataset/data'
-            )
-            
-            if rgb_image is not None:
-                # Set up the visualization path
-                vis_file = os.path.join(vis_dir, f'sample_{i}_gt_{sample["target"]}_pred_{sample["pred"]}.png')
-                
-                # Visualize with depth comparison
-                visualize_depth_classification_with_gt(
-                    rgb_image=rgb_image,
-                    pred_depth=sample['pred_depth'].numpy(),
-                    gt_depth=sample['gt_depth'].numpy() if sample['gt_depth'] is not None else None,
-                    ground_truth_label=sample['target'],
-                    predicted_label=sample['pred'],
-                    confidence=sample['confidence'],
-                    class_names=['No Table', 'Table'],
-                    title=f'Sample {i} - {sample["sequence"]}/{sample["subdir"]}',
-                    save_path=vis_file
-                )
-                
-                logger.info(f"Saved visualization to {vis_file}")
-    
+        logger.info(f"Depth Metrics: {json.dumps(depth_metrics, indent=4)}")
+
+    # Save results to JSON file
+    results_file = os.path.join(output_dir, 'evaluation_results.json')
+    results_data = {
+        'loss': float(test_loss),
+        'classification_metrics': {k: float(v) for k, v in test_metrics.items()},
+        'depth_metrics': {k: float(v) for k, v in depth_metrics.items()} if depth_metrics else {}
+    }
+    with open(results_file, 'w') as f:
+        json.dump(results_data, f, indent=4)
+    logger.info(f"Evaluation results saved to {results_file}")
+
+    # Visualize classification results (existing logic)
+    if visualize and vis_data:
+        logger.info(f"Generating classification visualization plot...")
+        try:
+            # Assuming visualize_classification_results is in src.utils.visualization
+            from src.utils.visualization import visualize_classification_results
+            # NOTE: The error "Image data of dtype object cannot be converted to float"
+            # likely occurs inside visualize_classification_results.
+            # Ensure that function checks if sample['gt_depth'] is None before plotting it.
+            visualize_classification_results(vis_data, vis_dir)
+        except ImportError:
+             logger.error("Could not import visualize_classification_results. Skipping classification visualization.")
+        except Exception as e:
+            logger.error(f"Failed to generate classification visualizations: {e}")
+
+    # Plot confusion matrix (existing logic)
+    if all_targets and all_preds:
+        logger.info("Generating confusion matrix plot...")
+        try:
+            # Assuming plot_confusion_matrix is in src.utils.visualization
+            from src.utils.visualization import plot_confusion_matrix
+            cm_path = os.path.join(output_dir, 'confusion_matrix.png')
+            plot_confusion_matrix(np.array(all_targets), np.array(all_preds), ['No Table', 'Table'], save_path=cm_path)
+            logger.info(f"Confusion matrix saved to {cm_path}")
+        except ImportError:
+             logger.error("Could not import plot_confusion_matrix. Skipping confusion matrix plot.")
+        except Exception as e:
+            logger.error(f"Failed to generate confusion matrix: {e}")
+
+    logger.info("Evaluation for this dataset completed!") # Changed log message slightly
+
     return test_loss, test_metrics, depth_metrics
 
 def main(args):
@@ -666,7 +664,7 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', type=str, default=None, help='Path to model checkpoint')
     parser.add_argument('--visualize', action='store_true', help='Visualize results')
     parser.add_argument('--num_vis_samples', type=int, default=20, help='Number of samples to visualize')
-    parser.add_argument('--eval_realsense', default=True,action='store_true', help='Evaluate on RealSense dataset')
+    parser.add_argument('--eval_realsense', action='store_true', help='Evaluate on RealSense dataset')
     args = parser.parse_args()
     
     main(args) 

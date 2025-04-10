@@ -3,7 +3,7 @@
 # Data settings
 data:
   root: "data/CW2-Dataset/data"
-  image_size: 384  # Input image size for the model
+  image_size: 480  # Input image size for the model
   num_workers: 4
   train_batch_size: 32  # Batch size for training
   eval_batch_size: 4    # Batch size for evaluation/testing
@@ -11,22 +11,34 @@ data:
 
 # Model settings
 model:
-  name: "resnet34"  # Base CNN architecture
-  pretrained: true  # Use pretrained weights
+  name: "resnet18"  # Base CNN architecture
+  pretrained: false  # Use pretrained weights
   num_classes: 2    # Binary classification: Table / No Table
   depth_model_type: "DPT_Hybrid"  # MiDaS depth estimation model type
   freeze_depth_estimator: true  # Whether to freeze the depth estimator during training
 
 # Training settings
 training:
-  epochs: 300
-  lr: 5e-4
-  weight_decay: 5e-5
-  lr_decay: 0.9
-  lr_decay_step: 5
+  epochs: 100
+  lr: 1e-3
+  weight_decay: 1e-3
   early_stopping: 100  # Number of epochs with no improvement after which training will be stopped
-  
-  # Depth estimation loss weights
+
+  # --- Scheduler Settings ---
+  scheduler_type: "cosine" # Options: "cosine", "step"
+
+  # StepLR settings (used if scheduler_type is "step")
+  step_lr_decay_step: 5
+  step_lr_gamma: 0.6
+
+  # CosineAnnealingLR settings (used if scheduler_type is "cosine")
+  # T_max: Maximum number of iterations (usually set to total epochs for one cycle)
+  cosine_T_max: 100 # Defaulting to epochs, adjust if needed
+  # eta_min: Minimum learning rate
+  cosine_eta_min: 1e-5 # A small fraction of the initial LR
+
+  # --- Depth Estimation Loss Weights ---
+  # (Only relevant if freeze_depth_estimator is false)
   depth_loss_weight: 1.0  # Set to 0.0 to disable depth loss when frozen
   si_weight: 1.0  # Scale-invariant MSE loss weight
   edge_weight: 0.1  # Edge-aware gradient loss weight
@@ -44,4 +56,4 @@ logging:
 visualization:
   num_samples: 20  # Number of samples to visualize in evaluation
   train_depth_vis: false  # Whether to visualize depth maps during training
-  test_depth_vis: true    # Whether to visualize depth maps during evaluation 
+  test_depth_vis: true    # Whether to visualize depth maps during evaluation

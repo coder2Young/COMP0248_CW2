@@ -27,6 +27,10 @@ class DepthEstimationModel:
         else:
             raise ValueError(f"Unknown model type: {model_type}")
         
+        # Print model parameters number with model type name
+        print(f"Model type: {model_type}")
+        print(f"Model parameters: {sum(p.numel() for p in self.model.parameters())}")
+
         # Load appropriate transformation for the model type
         midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
         if model_type == "DPT_Large" or model_type == "DPT_Hybrid":
@@ -50,10 +54,10 @@ class DepthEstimationModel:
     def train(self, mode=True):
         """
         Set the model to training mode.
-        
+
         Args:
             mode (bool): Whether to set training mode
-        
+
         Returns:
             DepthEstimationModel: Self
         """
@@ -61,18 +65,19 @@ class DepthEstimationModel:
             self.model.train()
         else:
             self.model.eval()
+
         return self
-    
+
     def eval(self):
         """
         Set the model to evaluation mode.
-        
+
         Returns:
             DepthEstimationModel: Self
         """
         self.model.eval()
         return self
-    
+
     def predict(self, image):
         """
         Predict depth map for an image.
@@ -158,7 +163,11 @@ class DepthClassifier(nn.Module):
         Returns:
             torch.Tensor: Logits of shape (B, num_classes)
         """
-        return self.base_model(x)
+        pred = self.base_model(x)
+
+        # # Apply sigmoid to get probabilities
+        # pred = torch.sigmoid(pred)
+        return pred
 
 class MonocularDepthClassifier(nn.Module):
     """
@@ -214,7 +223,7 @@ class MonocularDepthClassifier(nn.Module):
             MonocularDepthClassifier: Self
         """
         self.training_mode = mode
-        
+
         # Always set classifier to training mode
         self.classifier.train(mode)
         
@@ -260,7 +269,7 @@ class MonocularDepthClassifier(nn.Module):
         
         # Store the original depth maps for return if needed
         original_depth_maps = depth_maps.clone()
-        
+
         # Ensure depth maps have correct dimensions
         batch_size = depth_maps.size(0) if depth_maps.dim() > 3 else 1
         if depth_maps.dim() <= 3:
@@ -272,15 +281,15 @@ class MonocularDepthClassifier(nn.Module):
             depth_map = depth_maps[i]
             min_val = torch.min(depth_map)
             max_val = torch.max(depth_map)
-            
+
             if max_val > min_val:
                 # Create a new tensor for the normalized depth map
                 normalized_map = (depth_map - min_val) / (max_val - min_val)
             else:
                 normalized_map = torch.zeros_like(depth_map)
-            
+
             normalized_maps_list.append(normalized_map)
-        
+
         # Stack the normalized maps along the batch dimension
         normalized_depth_maps = torch.stack(normalized_maps_list, dim=0)
         

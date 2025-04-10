@@ -2,6 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# Model implementation based on:
+# https://github.com/antao97/dgcnn.pytorch/blob/master/model.py
+# Author: Antonio Barbalace
+
 def knn(x, k):
     """
     Find k nearest neighbors for each point in the point cloud.
