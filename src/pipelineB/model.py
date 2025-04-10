@@ -27,11 +27,12 @@ class DepthEstimationModel:
         else:
             raise ValueError(f"Unknown model type: {model_type}")
         
-        # Set model to evaluation mode
-        self.model.eval()
-        
-        # Define transformation for input images
-        self.transform = torch.hub.load("intel-isl/MiDaS", "transforms").small_transform
+        # Load appropriate transformation for the model type
+        midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
+        if model_type == "DPT_Large" or model_type == "DPT_Hybrid":
+            self.transform = midas_transforms.dpt_transform
+        else:
+            self.transform = midas_transforms.small_transform
     
     def to(self, device):
         """
@@ -46,7 +47,32 @@ class DepthEstimationModel:
         self.model = self.model.to(device)
         return self
     
-    @torch.no_grad()
+    def train(self, mode=True):
+        """
+        Set the model to training mode.
+        
+        Args:
+            mode (bool): Whether to set training mode
+        
+        Returns:
+            DepthEstimationModel: Self
+        """
+        if mode:
+            self.model.train()
+        else:
+            self.model.eval()
+        return self
+    
+    def eval(self):
+        """
+        Set the model to evaluation mode.
+        
+        Returns:
+            DepthEstimationModel: Self
+        """
+        self.model.eval()
+        return self
+    
     def predict(self, image):
         """
         Predict depth map for an image.
@@ -57,15 +83,13 @@ class DepthEstimationModel:
         Returns:
             torch.Tensor: Depth map
         """
-        # Ensure model is in evaluation mode
-        self.model.eval()
-        
         # Apply transforms
         if isinstance(image, torch.Tensor):
             if image.dim() == 4:  # Batch of images
                 batch_size = image.size(0)
                 depth_maps = []
                 for i in range(batch_size):
+                    # Apply the appropriate MiDaS transform
                     transformed_image = self.transform(image[i].cpu().numpy().transpose(1, 2, 0)).to(image.device)
                     prediction = self.model(transformed_image)
                     prediction = torch.nn.functional.interpolate(
@@ -98,7 +122,7 @@ class DepthClassifier(nn.Module):
     CNN-based classifier for depth maps.
     Uses a modified ResNet18 as the base architecture.
     """
-    def __init__(self, pretrained=True, num_classes=2):
+    def __init__(self, pretrained=True, num_classes=2, base_model_name="resnet18"):
         """
         Initialize the depth classifier.
         
@@ -108,21 +132,20 @@ class DepthClassifier(nn.Module):
         """
         super(DepthClassifier, self).__init__()
         
-        # Load ResNet18 model
-        self.base_model = models.resnet18(weights='IMAGENET1K_V1' if pretrained else None)
-        
-        # Modify the first conv layer to accept single-channel input (depth map)
-        # self.base_model.conv1 = nn.Conv2d(
-        #     1, 64, kernel_size=7, stride=2, padding=3, bias=False
-        # )
+        if base_model_name == "resnet18":
+            self.base_model = models.resnet18(weights='IMAGENET1K_V1' if pretrained else None)
+        elif base_model_name == "resnet34":
+            self.base_model = models.resnet34(weights='IMAGENET1K_V1' if pretrained else None)
+        else:
+            raise ValueError(f"Unknown model name: {base_model_name}")
         
         # Replace final fully connected layer
         num_features = self.base_model.fc.in_features
         self.base_model.fc = nn.Sequential(
-            nn.Linear(num_features, 256),
+            nn.Linear(num_features, 512),
             nn.ReLU(inplace=True),
             nn.Dropout(0.5),
-            nn.Linear(256, num_classes)
+            nn.Linear(512, num_classes)
         )
     
     def forward(self, x):
@@ -139,15 +162,16 @@ class DepthClassifier(nn.Module):
 
 class MonocularDepthClassifier(nn.Module):
     """
-    End-to-end model for depth estimation and classification.
+    Combined model for monocular depth estimation and classification.
+    Uses a pre-trained depth estimation model and a classifier.
     """
-    def __init__(self, depth_model_type="MiDaS_small", pretrained=True, num_classes=2, freeze_depth_estimator=True):
+    def __init__(self, depth_model_type="MiDaS_small", pretrained=True, num_classes=2, freeze_depth_estimator=True, base_model_name="resnet18"):
         """
-        Initialize the monocular depth classifier.
+        Initialize the combined model.
         
         Args:
-            depth_model_type (str): Type of MiDaS model to use
-            pretrained (bool): Whether to use pretrained weights
+            depth_model_type (str): Type of depth estimation model to use
+            pretrained (bool): Whether to use pretrained weights for the classifier
             num_classes (int): Number of output classes
             freeze_depth_estimator (bool): Whether to freeze the depth estimator during training
         """
@@ -157,7 +181,7 @@ class MonocularDepthClassifier(nn.Module):
         self.depth_estimator = DepthEstimationModel(model_type=depth_model_type)
         
         # Initialize depth classifier
-        self.classifier = DepthClassifier(pretrained=pretrained, num_classes=num_classes)
+        self.classifier = DepthClassifier(pretrained=pretrained, num_classes=num_classes, base_model_name=base_model_name)
         
         # Flag for training mode
         self.training_mode = False
@@ -190,16 +214,17 @@ class MonocularDepthClassifier(nn.Module):
             MonocularDepthClassifier: Self
         """
         self.training_mode = mode
+        
         # Always set classifier to training mode
         self.classifier.train(mode)
         
         # Set depth estimator mode based on freeze flag
         if self.freeze_depth_estimator:
             # If frozen, keep depth estimator in eval mode
-            self.depth_estimator.model.eval()
+            self.depth_estimator.eval()
         else:
             # If not frozen, allow depth estimator to train
-            self.depth_estimator.model.train(mode)
+            self.depth_estimator.train(mode)
         
         return self
     
@@ -212,7 +237,7 @@ class MonocularDepthClassifier(nn.Module):
         """
         self.training_mode = False
         self.classifier.eval()
-        self.depth_estimator.model.eval()
+        self.depth_estimator.eval()
         return self
     
     def forward(self, x, return_depth=False):
@@ -233,24 +258,31 @@ class MonocularDepthClassifier(nn.Module):
         else:
             depth_maps = self.depth_estimator.predict(x)
         
-        # Normalize depth maps to [0, 1]
+        # Store the original depth maps for return if needed
+        original_depth_maps = depth_maps.clone()
+        
+        # Ensure depth maps have correct dimensions
         batch_size = depth_maps.size(0) if depth_maps.dim() > 3 else 1
         if depth_maps.dim() <= 3:
             depth_maps = depth_maps.unsqueeze(0) if depth_maps.dim() == 2 else depth_maps.unsqueeze(1)
         
-        # Store the original depth maps for return if needed
-        original_depth_maps = depth_maps.clone()
-        
-        # Apply min-max normalization
-        normalized_depth_maps = depth_maps.clone()
+        # Apply min-max normalization WITHOUT in-place operations
+        normalized_maps_list = []
         for i in range(batch_size):
-            depth_map = normalized_depth_maps[i] if batch_size > 1 else normalized_depth_maps
+            depth_map = depth_maps[i]
             min_val = torch.min(depth_map)
             max_val = torch.max(depth_map)
+            
             if max_val > min_val:
-                normalized_depth_maps[i] = (depth_map - min_val) / (max_val - min_val)
+                # Create a new tensor for the normalized depth map
+                normalized_map = (depth_map - min_val) / (max_val - min_val)
             else:
-                normalized_depth_maps[i] = torch.zeros_like(depth_map)
+                normalized_map = torch.zeros_like(depth_map)
+            
+            normalized_maps_list.append(normalized_map)
+        
+        # Stack the normalized maps along the batch dimension
+        normalized_depth_maps = torch.stack(normalized_maps_list, dim=0)
         
         # Copy normalized depth maps on channel dimension to 3 channels
         depth_maps_3ch = normalized_depth_maps.repeat(1, 3, 1, 1)
@@ -279,7 +311,8 @@ def get_model(config):
         depth_model_type=config['model']['depth_model_type'],
         pretrained=config['model']['pretrained'],
         num_classes=config['model']['num_classes'],
-        freeze_depth_estimator=config['model'].get('freeze_depth_estimator', True)
+        freeze_depth_estimator=config['model'].get('freeze_depth_estimator', True),
+        base_model_name=config['model']['name']
     )
     
     return model 

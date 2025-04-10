@@ -666,7 +666,7 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', type=str, default=None, help='Path to model checkpoint')
     parser.add_argument('--visualize', action='store_true', help='Visualize results')
     parser.add_argument('--num_vis_samples', type=int, default=20, help='Number of samples to visualize')
-    parser.add_argument('--eval_realsense', action='store_true', help='Evaluate on RealSense dataset')
+    parser.add_argument('--eval_realsense', default=True,action='store_true', help='Evaluate on RealSense dataset')
     args = parser.parse_args()
     
     main(args) 

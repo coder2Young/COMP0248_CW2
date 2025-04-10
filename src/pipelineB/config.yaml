@@ -5,24 +5,25 @@ data:
   root: "data/CW2-Dataset/data"
   image_size: 384  # Input image size for the model
   num_workers: 4
-  batch_size: 32
+  train_batch_size: 32  # Batch size for training
+  eval_batch_size: 4    # Batch size for evaluation/testing
   train_val_split: 0.8  # 80% training, 20% validation
 
 # Model settings
 model:
-  name: "resnet18"  # Base CNN architecture
+  name: "resnet34"  # Base CNN architecture
   pretrained: true  # Use pretrained weights
   num_classes: 2    # Binary classification: Table / No Table
-  depth_model_type: "MiDaS_small"  # MiDaS depth estimation model type
-  freeze_depth_estimator: false  # Whether to freeze the depth estimator during training
+  depth_model_type: "DPT_Hybrid"  # MiDaS depth estimation model type
+  freeze_depth_estimator: true  # Whether to freeze the depth estimator during training
 
 # Training settings
 training:
-  epochs: 100
-  lr: 1e-3
-  weight_decay: 1e-4
-  lr_decay: 0.7
-  lr_decay_step: 10
+  epochs: 300
+  lr: 5e-4
+  weight_decay: 5e-5
+  lr_decay: 0.9
+  lr_decay_step: 5
   early_stopping: 100  # Number of epochs with no improvement after which training will be stopped
   
   # Depth estimation loss weights
@@ -41,4 +42,6 @@ logging:
 
 # Visualization settings
 visualization:
-  num_samples: 20  # Number of samples to visualize in evaluation 
+  num_samples: 20  # Number of samples to visualize in evaluation
+  train_depth_vis: false  # Whether to visualize depth maps during training
+  test_depth_vis: true    # Whether to visualize depth maps during evaluation 
