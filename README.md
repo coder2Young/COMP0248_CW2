@@ -65,9 +65,33 @@ python src/pipelineB/eval.py
 
 ### Pipeline C: Point Cloud Segmentation
 
+#### train and test on Sun3D:
+
+Set the parameter `predict=false` in config file and run:
+
 ```bash
 python src/pipelineC/train.py
 python src/pipelineC/eval.py
+```
+
+#### predict on our dataset:
+
+Copy the dataset into `data/CW2-Dataset/ucl_data/ucl_data`, the structure is:
+
+```
+Code/
+  └── data/                 # Data directory
+       └── CW2-Dataset/     # Sun3D dataset
+            └── ucl_data/   # our dataset
+                 └── ucl_data/
+                      ├── depthTSDF
+                      └── image
+```
+
+Set the parameter `predict=true` in config file and run:
+
+```bash
+python src/pipelineC/predict.py --visualize
 ```
 
 ## Results
